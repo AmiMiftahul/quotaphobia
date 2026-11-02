@@ -40,6 +40,7 @@ func setup(player: Player) -> void:
 	_camera = Camera3D.new()
 	_camera.far = 60.0
 	_camera.fov = 65.0
+	_camera.cull_mask = 0xFFFFF & ~Scrap.HELD_LAYER # Never film the item in your own hands.
 	_viewport.add_child(_camera)
 
 

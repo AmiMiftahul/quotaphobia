@@ -9,6 +9,9 @@ const FLOOR_HEIGHT := 0.25
 const SWING_SECONDS := 0.3
 const SCRAP_GLOW := Color(1.0, 0.75, 0.25, 0.18)
 const GEAR_GLOW := Color(0.4, 0.8, 1.0, 0.16)
+# Render layer 20 marks the item in your own hands, so your phone and camcorder don't
+# film it. Every other camera sees all layers.
+const HELD_LAYER := 1 << 19
 
 var item_id := 0
 var value := 0
@@ -28,13 +31,16 @@ var charges := 0: # Zap gun shots left.
 		charges = count
 		_show_charges()
 var locked := false # Inside Scrap Slots while it spins: nobody can take it.
+var recordings := 0 # Photos and clips on a camcorder. The footage itself stays on the host.
 var armed := false: # A thrown stun grenade, about to go off.
 	set(is_armed):
 		armed = is_armed
 		if _armed_light != null:
 			_armed_light.visible = is_armed
 
-var _model: Node3D
+var _model: Node3D # Gear only.
+var _visual: Node3D # What you see, scrap or gear.
+var _in_my_hands := false
 var _armed_light: OmniLight3D
 var _swing_left := 0.0
 var _blink := 0.0
@@ -49,6 +55,7 @@ func setup(id: int, data: Dictionary) -> void:
 	name = "Scrap%d" % id
 	if is_tool():
 		_model = Tools.build_model(kind)
+		_visual = _model
 		add_child(_model)
 		add_glow(_model, GEAR_GLOW)
 		_armed_light = OmniLight3D.new()
@@ -64,8 +71,10 @@ func setup(id: int, data: Dictionary) -> void:
 		model.position.y = -FLOOR_HEIGHT - Assets.bounds(Assets.FACTORY % FacilityLayout.SCRAP_MODELS[kind]).position.y * MODEL_SCALE
 		add_child(model)
 		add_glow(model)
+		_visual = model
 	charges = data.get("charges", 0)
-	NetSync.attach(self, [], [^":position", ^":holder_id", ^":stowed", ^":charges", ^":armed", ^":value", ^":locked"])
+	recordings = data.get("recordings", 0)
+	NetSync.attach(self, [], [^":position", ^":holder_id", ^":stowed", ^":charges", ^":armed", ^":value", ^":locked", ^":recordings"])
 
 
 func is_tool() -> bool:
@@ -74,8 +83,10 @@ func is_tool() -> bool:
 
 ## How the HUD names it: scrap shows its price, gear what's left in it.
 func describe() -> String:
-	if kind == Tools.ZAP_GUN:
+	if is_tool() and Tools.CATALOG[kind].charges > 0:
 		return "%s (%d/%d)" % [kind, charges, Tools.CATALOG[kind].charges]
+	if kind == Tools.CAMCORDER:
+		return "%s (%d/%d saved)" % [kind, recordings, Tools.TAPE_LIMIT]
 	if is_tool():
 		return kind
 	return "%s ($%d)" % [kind, value]
@@ -99,12 +110,22 @@ func _process(delta: float) -> void:
 	if armed:
 		_blink += delta
 		_armed_light.light_energy = 3.0 if fmod(_blink, 0.3) < 0.15 else 0.4
+	var holder := Session.player_node(holder_id) if holder_id != 0 else null
+	_mark_in_my_hands(holder != null and holder.is_local_player)
+	if kind == Tools.CAMCORDER:
+		_model.get_node("RecLight").visible = holder != null and holder.net_recording
 	if holder_id == 0:
 		if _model != null:
 			_pose(false)
 		return
-	var holder := Session.player_node(holder_id)
 	if holder == null:
+		return
+	if kind == Tools.SCOOTER and holder.net_riding:
+		# Under the rider's feet.
+		position = holder.position + Vector3(0, 0.03, 0)
+		rotation.y = holder.rotation.y
+		_model.rotation = Vector3.ZERO
+		_model.position.y = 0.0
 		return
 	if holder.is_local_player:
 		# Low and to the right, so your own item never blocks your view.
@@ -128,6 +149,20 @@ func _pose(held: bool) -> void:
 	var lean := -0.5 if kind == Tools.SHOVEL else 0.0
 	_model.rotation = Vector3(lean - chop * 1.3, 0, 0)
 	_model.position.y = -0.55 if kind == Tools.SHOVEL else -0.15
+
+
+func _mark_in_my_hands(mine: bool) -> void:
+	if mine == _in_my_hands or _visual == null:
+		return
+	_in_my_hands = mine
+	_set_layers(_visual, 1 | HELD_LAYER if mine else 1)
+
+
+static func _set_layers(node: Node, layers: int) -> void:
+	if node is VisualInstance3D:
+		node.layers = layers
+	for child in node.get_children():
+		_set_layers(child, layers)
 
 
 func _show_charges() -> void:

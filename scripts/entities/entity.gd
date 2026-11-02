@@ -87,11 +87,12 @@ func stun(seconds: float) -> void:
 	_waypoints.clear()
 
 
-## Called on the host when a shovel lands. Each blow stuns; the last one finishes it.
-func hurt(stun_seconds: float) -> void:
+## Called on the host when a shovel or shotgun lands. Each blow stuns; the last one
+## finishes it. A shotgun blast counts as several blows at once.
+func hurt(stun_seconds: float, blows: int = 1) -> void:
 	if max_hits() <= 0:
 		return
-	_hits_taken += 1
+	_hits_taken += blows
 	if _hits_taken >= max_hits():
 		Session.kill_entity(self)
 	else:

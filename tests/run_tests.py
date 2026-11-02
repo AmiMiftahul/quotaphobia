@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs everything: rule checks, then a real 4-player session (plus a rejected
+"""Runs everything: rule checks, a 2-player camcorder test, then a real 4-player session (plus a rejected
 fifth player, and a friend who joins late while the ship is in orbit) as separate
 game processes. Prints every problem it finds."""
 import os
@@ -63,13 +63,24 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("slots", [f"port={GAME_PORT - 5}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("slots", [f"port={GAME_PORT - 5}"]), ("kit", [f"port={GAME_PORT - 7}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)
                 except subprocess.TimeoutExpired:
                     procs[f"{role}0"].kill()
                     failures.append(f"{role}: timed out")
+            # The camcorder: one player films, a second one picks it up and watches.
+            tape_port = f"port={GAME_PORT - 6}"
+            procs["tape0"] = launch(logs, "tape0", "role=tape", login("tape0"), *cloud, tape_port)
+            time.sleep(1.0)
+            procs["tape_client0"] = launch(logs, "tape_client0", "role=tape_client", login("tape_client0"), *cloud, tape_port)
+            for name in ("tape0", "tape_client0"):
+                try:
+                    procs[name].wait(timeout=150)
+                except subprocess.TimeoutExpired:
+                    procs[name].kill()
+                    failures.append(f"{name}: timed out")
             procs["host0"] = launch(logs, "host0", "role=host", "idx=0", login("host0"), *common)
             time.sleep(1.0)
             for i in (1, 2, 3):

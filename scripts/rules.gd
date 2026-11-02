@@ -3,7 +3,7 @@ extends RefCounted
 ## Every gameplay number and shared rule lives here so balancing is one-file work.
 
 const MAX_PLAYERS := 4
-const ROUND_SECONDS := 300.0
+const ROUND_SECONDS := 300.0 # On a medium site; see SITE_INFO for the others.
 const DAYS_PER_LEVEL := 4 # Each day is one trip. Miss the goal after the last one and the run ends.
 const CARRY_LIMIT := 6 # One in your hands, plus five in the backpack.
 const STOWED_WEIGHT_SHARE := 0.5 # A backpack carries weight better than your hands do.
@@ -30,6 +30,16 @@ const GAMBLE_MAX_VALUE := 9999
 # [chance, what the scrap's value is multiplied by]. Half the time it's gone; the rest
 # pays out, up to six times. On average a bet breaks even (a test checks this).
 const GAMBLE_TABLE := [[0.50, 0.0], [0.28, 1.5], [0.14, 2.0], [0.06, 3.0], [0.02, 6.0]]
+
+const GACHA_POS := Vector3(3.5, 0.0, -7.4) # The capsule machine, across the door from Scrap Slots.
+const GACHA_SECONDS := 2.0
+const GACHA_PRICE := 30 # Credits per pull.
+const GACHA_REFUND := 15
+const GACHA_GOLD := 150
+const GACHA_JACKPOT := 750
+# [chance, prize]. A pull is worth a little less than it costs on average (a test checks
+# this), so the gacha is a gamble, not a money printer.
+const GACHA_TABLE := [[0.35, "dud"], [0.28, "refund"], [0.22, "gear"], [0.10, "rare"], [0.04, "gold"], [0.01, "jackpot"]]
 
 const STARTING_CREDITS := 60 # Every banked dollar of scrap also becomes a credit to spend.
 const TOOL_LIMIT := 12 # Gear the crew can own at once.
@@ -65,6 +75,49 @@ static func difficulty(level: int) -> int:
 ## The facility grows for the first few rounds, then stays at 8 x 8 rooms.
 static func grid_size(difficulty_level: int) -> int:
 	return mini(4 + difficulty_level, 8)
+
+
+# Each day lands on a site of one of these sizes, so no two days in a row feel the same.
+# "grid" changes the usual number of rooms per side, "halls" is how many big open halls
+# it tries to fit, and "seconds" is how long the crew has before the ship leaves.
+const SITES: Array[String] = ["small", "medium", "large"]
+const SITE_INFO := {
+	"small": {"name": "Small outpost", "grid": -1, "halls": 1, "seconds": 240.0},
+	"medium": {"name": "Facility", "grid": 0, "halls": 2, "seconds": ROUND_SECONDS},
+	"large": {"name": "Sprawling complex", "grid": 2, "halls": 4, "seconds": 390.0},
+}
+const MIN_GRID := 4
+const MAX_GRID := 10
+
+
+static func site_grid(difficulty_level: int, site: String) -> int:
+	return clampi(grid_size(difficulty_level) + SITE_INFO[site].grid, MIN_GRID, MAX_GRID)
+
+
+static func round_seconds(site: String) -> float:
+	return SITE_INFO[site].seconds
+
+
+## The site for a day: every three days hold one of each size, in a shuffled order,
+## and the same size never comes up twice in a row.
+static func site_for_day(run_seed: int, number: int) -> String:
+	var block := (number - 1) / 3
+	var order := _site_block(run_seed, block)
+	if block > 0 and order[0] == _site_block(run_seed, block - 1)[2]:
+		order = [order[1], order[0], order[2]]
+	return order[(number - 1) % 3]
+
+
+static func _site_block(run_seed: int, block: int) -> Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([run_seed, "sites", block])
+	var order: Array = SITES.duplicate()
+	for index in range(order.size() - 1, 0, -1):
+		var other := rng.randi_range(0, index)
+		var swap: String = order[index]
+		order[index] = order[other]
+		order[other] = swap
+	return order
 
 
 ## The ship is the safe room at cell (0, -1): x in [-5, 5], z in [-15, -5].

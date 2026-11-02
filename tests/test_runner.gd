@@ -12,6 +12,8 @@ var _released := {}
 var _ended_reason := ""
 var _shop_reply := ""
 var _effects: Array[String] = []
+var _tape_messages: Array[String] = []
+var _tape_lists: Array = []
 
 
 func _ready() -> void:
@@ -24,6 +26,12 @@ func _ready() -> void:
 	Net.connection_ended.connect(func(reason: String) -> void: _ended_reason = reason)
 	Session.shop_replied.connect(func(_ok: bool, message: String) -> void: _shop_reply = message)
 	Session.effect_played.connect(func(kind: String, _pos: Vector3) -> void: _effects.append(kind))
+	Session.tape_saved.connect(func(message: String) -> void: _tape_messages.append(message))
+	Session.tape_list_received.connect(func(_item_id: int, entries: Array) -> void: _tape_lists.append(entries))
+	# Site sizes are random; tests that rely on a room layout land on a medium site. The
+	# days test and the 4-player session keep the real rotation.
+	if role not in ["days", "host"]:
+		Session.forced_site = "medium"
 	match role:
 		"unit": await _unit()
 		"extra": await _extra()
@@ -39,6 +47,9 @@ func _ready() -> void:
 		"days": await _days()
 		"gear": await _gear()
 		"slots": await _slots()
+		"tape": await _tape()
+		"kit": await _kit()
+		"tape_client": await _tape_client()
 		"late": await _late()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
@@ -133,8 +144,9 @@ func _unit() -> void:
 		var crew := seed_value % 4 + 1
 		var required := Rules.quota(number, crew)
 		var map: String = MapThemes.ORDER[seed_value % 4]
-		var layout := FacilityLayout.new(seed_value, Rules.grid_size(number), number, required, map)
-		var again := FacilityLayout.new(seed_value, Rules.grid_size(number), number, required, map)
+		var site: String = Rules.SITES[seed_value % 3]
+		var layout := FacilityLayout.new(seed_value, Rules.site_grid(number, site), number, required, map, site)
+		var again := FacilityLayout.new(seed_value, Rules.site_grid(number, site), number, required, map, site)
 		deterministic = deterministic and layout.fingerprint() == again.fingerprint()
 		for cell in layout.all_cells():
 			connected_ok = connected_ok and not layout.path(FacilityLayout.ENTRY_CELL, cell).is_empty()
@@ -143,7 +155,7 @@ func _unit() -> void:
 			total += spawn.value
 			ship_clear = ship_clear and not Rules.in_ship(spawn.pos)
 		winnable = winnable and total >= required
-	check("every room is reachable (200 facilities)", connected_ok)
+	check("every room is reachable (200 facilities, every size)", connected_ok)
 	check("same seed builds the same facility", deterministic)
 	check("every round has enough scrap to meet quota", winnable)
 	check("scrap never spawns inside the ship", ship_clear)
@@ -256,6 +268,122 @@ func _unit() -> void:
 	expected_order.sort()
 	check("each run visits all four maps, in the same order for everyone", same_order and sorted_order == expected_order)
 	check("the Listener hears sprinting far, walking near, stillness never", Listener.heard_from(6.5) > Listener.heard_from(4.0) and Listener.heard_from(4.0) > 0.0 and Listener.heard_from(0.0) == 0.0)
+
+	# Site sizes: every three days bring one of each, never the same size twice in a row.
+	var rotation_ok := true
+	for run_seed in 300:
+		var previous := ""
+		var first_three := {}
+		for number in range(1, 13):
+			var site := Rules.site_for_day(run_seed, number)
+			rotation_ok = rotation_ok and site != previous and site == Rules.site_for_day(run_seed, number)
+			previous = site
+			if number <= 3:
+				first_three[site] = true
+		rotation_ok = rotation_ok and first_three.size() == 3
+	check("every 3 days hold one site of each size, never the same size twice in a row", rotation_ok)
+	var grids_ok := true
+	for toughness in range(1, 20):
+		var small := Rules.site_grid(toughness, "small")
+		var large := Rules.site_grid(toughness, "large")
+		grids_ok = grids_ok and small >= Rules.MIN_GRID and small < Rules.site_grid(toughness, "medium") and Rules.site_grid(toughness, "medium") < large and large <= Rules.MAX_GRID
+	check("small sites are smaller than usual, and large ones bigger", grids_ok)
+	check("bigger sites give the crew more time", Rules.round_seconds("small") < Rules.round_seconds("medium") and Rules.round_seconds("medium") < Rules.round_seconds("large"))
+
+	# Big open halls.
+	var halls_ok := true
+	var walls_gone := true
+	var rooms_walled := true
+	var pillars_ok := true
+	var hall_rooms := {"small": 0, "medium": 0, "large": 0}
+	var scrap_count := {"small": 0, "medium": 0, "large": 0}
+	var biggest_hall := 0
+	for seed_value in 150:
+		var site: String = Rules.SITES[seed_value % 3]
+		var toughness := seed_value % 9 + 1
+		var layout := FacilityLayout.new(seed_value, Rules.site_grid(toughness, site), toughness, Rules.quota(toughness, 4), MapThemes.ORDER[seed_value % 4], site)
+		var whole := Rect2i(0, 0, layout.size, layout.size)
+		var corners := 0
+		for index in layout.halls.size():
+			var block := layout.halls[index]
+			biggest_hall = maxi(biggest_hall, block.get_area())
+			halls_ok = halls_ok and whole.encloses(block) and not block.has_point(FacilityLayout.ENTRY_CELL) and block.get_area() >= 2
+			for other_index in layout.halls.size():
+				halls_ok = halls_ok and (other_index == index or not layout.halls[other_index].intersects(block))
+			corners += (block.size.x - 1) * (block.size.y - 1)
+			hall_rooms[site] += block.get_area()
+		for cell in layout.all_cells():
+			for dir: Vector2i in [Vector2i(1, 0), Vector2i(0, 1)]:
+				var next: Vector2i = cell + dir
+				if not layout.has_cell(next):
+					continue
+				var same_hall := layout.hall_at(cell) >= 0 and layout.hall_at(cell) == layout.hall_at(next)
+				walls_gone = walls_gone and (not same_hall or (layout.is_merged(cell, next) and layout.is_open(cell, next)))
+				rooms_walled = rooms_walled and (same_hall or not layout.is_merged(cell, next))
+		pillars_ok = pillars_ok and layout.pillars.size() == corners
+		for pillar in layout.pillars:
+			var offset := pillar - FacilityLayout.cell_center(FacilityLayout.cell_at(pillar + Vector3(0.1, 0, 0.1)))
+			pillars_ok = pillars_ok and absf(offset.x) - Level.PILLAR_WIDTH * 0.5 > Level.DOOR_WIDTH * 0.5 and absf(offset.z) - Level.PILLAR_WIDTH * 0.5 > Level.DOOR_WIDTH * 0.5
+			for prop in layout.props:
+				pillars_ok = pillars_ok and prop.pos.distance_to(pillar) > 3.0
+		scrap_count[site] += layout.scrap_spawns.size()
+	check("halls fit the facility, never overlap and never take the entry room", halls_ok)
+	check("there are no walls inside a hall", walls_gone)
+	check("ordinary rooms keep their walls", rooms_walled)
+	check("pillars stand where hall rooms meet, clear of walkways and props", pillars_ok)
+	check("large sites have far more hall space than small ones (%d vs %d)" % [hall_rooms.large, hall_rooms.small], hall_rooms.large > hall_rooms.small * 2 and hall_rooms.medium > hall_rooms.small)
+	check("large sites can have halls of 6 rooms or more", biggest_hall >= 6)
+	check("larger sites hold more scrap", scrap_count.large > scrap_count.medium and scrap_count.medium > scrap_count.small)
+	var open_halls := {"cryo": 0, "biolab": 0}
+	for seed_value in 40:
+		for map: String in open_halls:
+			open_halls[map] += FacilityLayout.new(seed_value, 7, 3, 200, map, "large").halls.size()
+	check("the Cryo Vault has more open halls than the tight Bio Lab", open_halls.cryo > open_halls.biolab)
+
+	# The shop and the gacha.
+	var catalog_ok := true
+	for kind: String in Tools.ORDER:
+		var model := Tools.build_model(kind)
+		catalog_ok = catalog_ok and Tools.CATALOG.has(kind) and Tools.CATALOG[kind].price > 0 and model.get_child_count() > 0
+		model.free()
+	check("every piece of gear has a price, a description and a model", catalog_ok and Tools.CATALOG.size() == Tools.ORDER.size())
+	var pools_ok := true
+	for kind: String in Tools.GACHA_GEAR + Tools.GACHA_RARE:
+		pools_ok = pools_ok and Tools.is_gear(kind)
+	check("gacha capsules only hold real gear", pools_ok)
+	var gacha_chance := 0.0
+	var gacha_worth := 0.0
+	for row: Array in Rules.GACHA_TABLE:
+		gacha_chance += row[0]
+		gacha_worth += row[0] * _gacha_worth(row[1])
+	check("the gacha odds add up to 100%%", is_equal_approx(gacha_chance, 1.0))
+	check("a pull is worth a bit less than it costs ($%.2f of $%d)" % [gacha_worth, Rules.GACHA_PRICE], gacha_worth < Rules.GACHA_PRICE and gacha_worth > Rules.GACHA_PRICE * 0.85)
+	check("the jackpot is rare and huge", Rules.GACHA_TABLE.back()[1] == "jackpot" and Rules.GACHA_TABLE.back()[0] <= 0.01 and Rules.GACHA_JACKPOT >= Rules.GACHA_PRICE * 20)
+	check("the gacha and Scrap Slots both stand in the ship", Rules.in_ship(Rules.GACHA_POS) and Rules.in_ship(Session.gacha_tray()) and Rules.GACHA_POS.distance_to(Rules.GAMBLE_POS) > 5.0 and Rules.GACHA_POS.distance_to(Rules.TERMINAL_POS) > Rules.INTERACT_RANGE * 1.5)
+	check("a scooter is faster than sprinting, but hunters can still hear it", Tools.SCOOTER_SPEED > Player.SPRINT_SPEED and Listener.heard_from(Tools.SCOOTER_SPEED) >= Listener.heard_from(Player.SPRINT_SPEED))
+	check("a flashbang is quicker and wider than a stun grenade, but stuns for less", Tools.FLASH_FUSE < Tools.FUSE_SECONDS and Tools.FLASH_RADIUS > Tools.BLAST_RADIUS and Tools.FLASH_STUN < Tools.BLAST_STUN)
+	check("a shotgun blast never kills a healthy crewmate outright", Tools.SHOTGUN_CREW_DAMAGE < Rules.PLAYER_MAX_HP)
+
+	# Camcorder footage: the host only keeps real, small recordings.
+	var jpeg := Image.create(32, 18, false, Image.FORMAT_RGB8).save_jpg_to_buffer(0.8)
+	var at_zero := PackedFloat32Array([0.0])
+	check("a photo is accepted", Session.valid_recording("photo", [jpeg], at_zero, 0.0))
+	check("a clip is accepted", Session.valid_recording("clip", [jpeg, jpeg, jpeg], PackedFloat32Array([0.0, 0.1, 0.2]), 0.3))
+	check("a photo is one picture", not Session.valid_recording("photo", [jpeg, jpeg], PackedFloat32Array([0.0, 0.0]), 0.0))
+	check("anything that isn't a JPEG is refused", not Session.valid_recording("photo", [PackedByteArray([1, 2, 3, 4, 5])], at_zero, 0.0) and not Session.valid_recording("photo", ["text"], at_zero, 0.0))
+	check("clips can't be longer than %d seconds" % Tools.CLIP_SECONDS, not Session.valid_recording("clip", [jpeg], at_zero, Tools.CLIP_SECONDS + 1.0))
+	var many: Array = []
+	var many_times := PackedFloat32Array()
+	for frame in 80:
+		many.append(jpeg)
+		many_times.append(frame * 0.05)
+	check("clips can't have too many frames", not Session.valid_recording("clip", many, many_times, 4.0))
+	check("clip timings must be in order", not Session.valid_recording("clip", [jpeg, jpeg], PackedFloat32Array([0.2, 0.1]), 0.3))
+	check("every frame needs a time", not Session.valid_recording("clip", [jpeg, jpeg], at_zero, 0.3))
+	var huge := jpeg.duplicate()
+	huge.resize(Tools.MAX_FRAME_BYTES + 1)
+	check("oversized pictures are refused", not Session.valid_recording("photo", [huge], at_zero, 0.0))
+	check("only photos and clips are kept", not Session.valid_recording("song", [jpeg], at_zero, 0.0))
 
 	# Balance: hunters grow stronger each level, but never out of reach.
 	var first := Rules.threat_power(1)
@@ -652,6 +780,7 @@ func _ui() -> void:
 	await _press(KEY_E)
 	check("E opens the terminal and frees the mouse", main._terminal.visible and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE)
 	check("the terminal lists all the gear", main._terminal_buttons.size() == Tools.ORDER.size() and main._terminal_credits.text.contains("$60"))
+	check("the terminal fits on screen", get_viewport().get_visible_rect().encloses(main._terminal.get_global_rect()))
 	check("gear the crew can't afford can't be bought", main._terminal_buttons[Tools.ZAP_GUN].disabled and not main._terminal_buttons[Tools.SHOVEL].disabled)
 	check("the terminal fits on screen", screen.encloses(main._terminal.get_global_rect()))
 	await _shot("2c_terminal")
@@ -816,6 +945,9 @@ func _ui() -> void:
 
 	await _ui_phone(main)
 	await _ui_backpack(main)
+	await _ui_camcorder(main)
+	await _ui_hall()
+	await _ui_kit(main)
 	await _ui_settings(main)
 
 	# A real left click swings the shovel at the Stalker.
@@ -1105,6 +1237,102 @@ func _ui_phone(main: Control) -> void:
 		for file_name in DirAccess.get_files_at(folder):
 			DirAccess.remove_absolute(folder.path_join(file_name))
 		DirAccess.remove_absolute(folder)
+
+
+## The camcorder, with real keys and real pictures.
+func _ui_camcorder(main: Control) -> void:
+	var hand_before := Session.item_held_by(Net.my_id())
+	var camcorder := _give(Tools.CAMCORDER)
+	var cam := me().camcorder
+	await wait(0.2)
+	check("the prompt shows the camcorder's buttons", me().interact_prompt.contains("Left click: photo") and me().interact_prompt.contains("R: record a clip") and me().interact_prompt.contains("V: watch (0 saved)"))
+	await _click(MOUSE_BUTTON_LEFT)
+	check("left click takes a camcorder photo", await until(func() -> bool: return camcorder.recordings == 1, 3.0))
+	check("the HUD confirms it", await until(func() -> bool: return main._phone_toast.visible and main._phone_toast.text.begins_with("Photo saved on the camcorder"), 2.0))
+	await _press(KEY_R)
+	check("R starts filming, and its screen shows what it sees", cam.is_recording and await until(func() -> bool: return main._cam_panel.visible and main._cam_status.text.begins_with("REC"), 1.0))
+	await wait(0.5)
+	await _shot("camcorder_recording")
+	var started_at := Time.get_ticks_msec()
+	while cam.is_recording and Time.get_ticks_msec() - started_at < 8000:
+		me().rotate_y(0.02)
+		await get_tree().process_frame
+	check("a clip stops by itself after 5 seconds", not cam.is_recording and is_equal_approx(cam.record_elapsed, Tools.CLIP_SECONDS))
+	check("the clip is saved on the camcorder", await until(func() -> bool: return camcorder.recordings == 2, 5.0))
+	await _press(KEY_V)
+	check("V plays it back", await until(func() -> bool: return main._cam_panel.visible and main._cam_view.texture != null and main._cam_status.text.begins_with("PLAY"), 5.0))
+	var first_look: Image = main._cam_view.texture.get_image()
+	check("playback is a real picture (%.3f bright)" % _average_brightness(first_look), first_look.get_size() == Tools.CLIP_SIZE and _average_brightness(first_look) > 0.02)
+	check("the camcorder screen fits on screen", get_viewport().get_visible_rect().encloses(main._cam_panel.get_global_rect()))
+	check("the camcorder screen doesn't cover the prompt", not main._cam_panel.get_global_rect().intersects(Rect2(main._prompt_label.get_global_rect().get_center() - Vector2(main._prompt_label.get_theme_font("font").get_multiline_string_size(main._prompt_label.text, HORIZONTAL_ALIGNMENT_CENTER, -1, 20).x * 0.5, 0), Vector2(main._prompt_label.get_theme_font("font").get_multiline_string_size(main._prompt_label.text, HORIZONTAL_ALIGNMENT_CENTER, -1, 20).x, 1))))
+	await wait(1.0)
+	await _shot("camcorder_playback")
+	check("the clip moves as it plays", main._cam_view.texture.get_image().get_data() != first_look.get_data())
+	await _click(MOUSE_BUTTON_LEFT)
+	check("left click steps to the photo", await until(func() -> bool: return main._cam_status.text.begins_with("PHOTO  1 / 2"), 3.0))
+	var photo: Image = main._cam_view.texture.get_image()
+	var colors := {}
+	for sample in 200:
+		colors[photo.get_pixel(sample * 6 % photo.get_width(), sample * 3 % photo.get_height())] = true
+	check("the photo is a real %d x %d picture (%d colours sampled)" % [Tools.SNAPSHOT_SIZE.x, Tools.SNAPSHOT_SIZE.y, colors.size()], photo.get_size() == Tools.SNAPSHOT_SIZE and colors.size() > 10)
+	await _shot("camcorder_photo")
+	await _press(KEY_V)
+	check("V again stops watching", not cam.viewing and await until(func() -> bool: return not main._cam_panel.visible, 1.0))
+	Session.scrap_root.remove_child(camcorder)
+	camcorder.queue_free()
+	for other in Session.items_held_by(Net.my_id()):
+		other.stowed = other != hand_before
+
+
+## The scooter and the gacha, with real clicks and keys.
+func _ui_kit(main: Control) -> void:
+	var hand_before := Session.item_held_by(Net.my_id())
+	var board := _give(Tools.SCOOTER)
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.2)
+	await _click(MOUSE_BUTTON_LEFT)
+	check("a left click hops on the scooter", me().net_riding)
+	await wait(0.3)
+	await _shot("scooter")
+	await _click(MOUSE_BUTTON_LEFT)
+	check("another steps off", not me().net_riding)
+	Session.scrap_root.remove_child(board)
+	board.queue_free()
+	for other in Session.items_held_by(Net.my_id()):
+		other.stowed = other != hand_before
+	# A rigged jackpot, so it can be seen.
+	me().rotation.y = -PI * 0.5
+	me().teleport(Vector3(Rules.GACHA_POS.x - 2.2, 0.1, Rules.GACHA_POS.z))
+	var credits_before := Session.credits
+	Session.credits = maxi(Session.credits, 100)
+	Session.gacha_rig = Rules.GACHA_TABLE.size() - 1
+	await wait(0.3)
+	await _shot("gacha")
+	await _press(KEY_E)
+	check("E pulls the gacha", Session.gacha_busy())
+	await until(func() -> bool: return not Session.gacha_busy(), 4.0)
+	await wait(0.3)
+	check("a jackpot is announced on screen", main._phone_toast.visible and main._phone_toast.text.contains("JACKPOT"))
+	await _shot("gacha_jackpot")
+	Session.gacha_rig = -1
+	Session.credits = credits_before # Later checks count on the crew's real credits.
+
+
+## A look across one of the facility's big halls.
+func _ui_hall() -> void:
+	if Session.layout.halls.is_empty():
+		check("this facility has a hall to look at", false)
+		return
+	var block := Session.layout.halls[0]
+	var from := FacilityLayout.cell_center(block.position)
+	var toward := Session.layout.hall_center(0) - from
+	if toward.length() < 0.1:
+		toward = Vector3.RIGHT
+	me().teleport(from - toward.normalized() * 3.5 + Vector3(0, 0.1, 0))
+	me().rotation.y = atan2(-toward.x, -toward.z)
+	await wait(0.5)
+	await _shot("hall")
+	check("a hall is open space: no wall between its rooms", Session.layout.is_merged(block.position, block.position + (Vector2i(1, 0) if block.size.x > 1 else Vector2i(0, 1))))
 
 
 func _average_brightness(image: Image) -> float:
@@ -1557,6 +1785,7 @@ func _days() -> void:
 	check("a run starts on level 1, day 1", Session.level_number == 1 and Session.day == 1 and Session.days_per_level == 4)
 	await until(func() -> bool: return me() != null, 3.0)
 	var first_map := Session.map_id
+	var first_site := Session.site
 
 	# Scrap adds up across days, and the day moves on.
 	await _end_day(40)
@@ -1573,7 +1802,11 @@ func _days() -> void:
 	check("the HUD shows the day", main._top_label.text.contains("Level 1") and main._top_label.text.contains("Day 2 of 4"))
 	check("the HUD shows banked scrap toward the goal", main._top_label.text.contains("Goal $40 / $100"))
 	check("each day is a different map", Session.map_id != first_map)
-	check("the clock restarts each day", Session.time_left > Rules.ROUND_SECONDS - 5.0)
+	check("the clock restarts each day, with the time this site gets", Session.time_left > Rules.round_seconds(Session.site) - 5.0 and Session.time_left <= Rules.round_seconds(Session.site))
+	check("the banner names the site's size", main._banner_label.text.contains(Rules.SITE_INFO[Session.site].name.to_upper()))
+	check("the facility is the size its site says", Session.layout.size == Rules.site_grid(Rules.difficulty(1), Session.site) and Session.layout.site == Session.site)
+	var sites_seen := {first_site: true, Session.site: true}
+	check("day 2 is a different size from day 1 (%s, %s)" % [first_site, Session.site], Session.site != first_site)
 
 	# A dead crew loses that day's scrap and the day, but not the run.
 	await _end_day(30, true)
@@ -1584,6 +1817,8 @@ func _days() -> void:
 	check("the results explain a wipe", main._results_label.text.contains("Nobody made it back") and main._results_label.text.begins_with("Day over. 2 days left"))
 	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == 3, 5.0)
 	check("a wipe still uses up the day", Session.day == 3 and Session.level_banked == 40)
+	sites_seen[Session.site] = true
+	check("three days visit a small, a medium and a large site", sites_seen.size() == 3)
 	check("everyone is back the next day", Session.is_player_alive(Net.my_id()))
 
 	# Reaching the goal moves on straight away, even with days to spare.
@@ -2310,7 +2545,16 @@ func _scenario_orbit() -> void:
 		# Everyone else stands well clear of the swing.
 		me().teleport(Vector3(3.0 if role == "host" else -3.0, 0.1, -6.0))
 	await barrier("lined_up", 4)
-	await wait(0.5)
+	# Swing only once every machine sees everyone in place: a busy computer can deliver
+	# "I've moved" before the move itself, and a stale position would take the hit.
+	var spots := {"Host": Vector3(3.0, 0, -6.0), "Late": Vector3(-3.0, 0, -6.0), "Bot1": Vector3(0, 0, -8.7), "Bot2": Vector3(0, 0, -10.0)}
+	var all_in_place := func() -> bool:
+		for node: Player in Session.players_root.get_children():
+			if Vector2(node.net_pos.x - spots[node.display_name].x, node.net_pos.z - spots[node.display_name].z).length() > 0.1:
+				return false
+		return true
+	check("everyone sees the crew line up", await until(all_in_place, 5.0))
+	await barrier("seen_lined_up", 4)
 	if idx == 1:
 		Session.request_use_item.rpc_id(1)
 	check("everyone sees a crewmate get bonked", await until(func() -> bool: return Session.player_states[bot2].hp == Rules.PLAYER_MAX_HP - Tools.SHOVEL_CREW_DAMAGE))
@@ -2783,4 +3027,403 @@ func _slots() -> void:
 	check("the day ends cleanly mid-spin", Session.phase == Session.Phase.RESULTS)
 	check("the ship returns to orbit afterwards", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0))
 	check("the machine is idle again in orbit", not Session.level.gamble_station.is_spinning() and not Session.gamble_busy())
+	Net.leave()
+
+
+# --- The camcorder: one player films, another picks it up and watches --------------
+
+func _tape() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.goal_override = 5000
+	Session.results_seconds = 0.7
+	Session.open_ship()
+	check("a friend joins to share the camcorder", await until(func() -> bool: return Net.players.size() == 2 and Session.players_root.get_child_count() == 2, 30.0))
+	var friend := peer_named("Client")
+	me().teleport(Rules.TERMINAL_POS + Vector3(-1.2, 0.1, 0))
+	await wait(0.1)
+	Session.request_buy.rpc_id(1, Tools.CAMCORDER)
+	var camcorder := gear(Tools.CAMCORDER)
+	check("a camcorder can be bought", camcorder != null and Session.credits == Rules.STARTING_CREDITS - Tools.CATALOG[Tools.CAMCORDER].price)
+	check("a new camcorder is empty", camcorder.recordings == 0 and camcorder.describe() == "Camcorder (0/12 saved)")
+	camcorder.holder_id = friend
+	await barrier("given", 2)
+
+	# The friend films, watches, then puts it down (see _tape_client).
+	await barrier("filmed", 2)
+	var tape: Array = Session._tapes.get(camcorder.item_id, [])
+	check("the host keeps the friend's photo and clip", tape.size() == 2 and tape[0].kind == "photo" and tape[1].kind == "clip")
+	if tape.size() == 2:
+		var clip: Dictionary = tape[1]
+		var rate: float = clip.frames.size() / clip.length
+		check("a clip keeps about %d pictures a second (%.1f)" % [Tools.CLIP_FPS, rate], absf(rate - Tools.CLIP_FPS) < 2.5)
+		check("footage remembers who filmed it", clip.by == "Client" and tape[0].by == "Client")
+	check("the friend put the camcorder down", camcorder.holder_id == 0)
+
+	# The host picks it up and watches what the friend filmed.
+	me().teleport(Vector3(camcorder.position.x, 0.1, camcorder.position.z))
+	await wait(0.1)
+	Session.request_pickup.rpc_id(1, camcorder.item_id)
+	check("someone else can pick it up", camcorder.holder_id == 1)
+	var cam := me().camcorder
+	cam.open_viewer()
+	check("they can watch the friend's footage", await until(func() -> bool: return cam.list_ready and cam.current_texture() != null, 5.0))
+	check("all of it, starting with the newest", cam.listing.size() == 2 and cam.current().kind == "clip" and cam.current().by == "Client")
+	cam.close_viewer()
+	await barrier("host_has_it", 2)
+	await barrier("friend_refused", 2)
+
+	# Twelve recordings at most: then the oldest is recorded over.
+	for shot in Tools.TAPE_LIMIT - 1:
+		var replies := _tape_messages.size()
+		cam.take_photo()
+		await until(func() -> bool: return _tape_messages.size() > replies, 3.0)
+	tape = Session._tapes.get(camcorder.item_id, [])
+	check("a camcorder holds %d recordings" % Tools.TAPE_LIMIT, camcorder.recordings == Tools.TAPE_LIMIT and tape.size() == Tools.TAPE_LIMIT)
+	check("a full camcorder records over the oldest", tape[0].kind == "clip" and _tape_messages.back().contains("12/12") and _tape_messages.back().contains("recorded over"))
+	var uids: Array = tape.map(func(entry: Dictionary) -> int: return entry.uid)
+
+	# Footage brought home is kept for tomorrow.
+	Session.start_run()
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0)
+	check("the camcorder lands in your hands", is_instance_valid(camcorder) and camcorder.holder_id == 1)
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.1)
+	Session._end_round()
+	await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0)
+	var kept := gear(Tools.CAMCORDER)
+	check("a camcorder brought home keeps its footage", kept != null and kept.recordings == Tools.TAPE_LIMIT and Session._tapes.get(kept.item_id, []).map(func(entry: Dictionary) -> int: return entry.uid) == uids)
+	await barrier("home", 2)
+
+	# Left outside, it's gone, and its footage with it.
+	me().teleport(Vector3(kept.position.x, 0.1, kept.position.z))
+	await wait(0.1)
+	Session.request_pickup.rpc_id(1, kept.item_id)
+	Session.start_run()
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0)
+	me().teleport(Vector3(0, 0.1, 2.0))
+	await wait(0.1)
+	Session.request_drop.rpc_id(1)
+	Session._end_round()
+	await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0)
+	check("a camcorder left outside is lost, footage and all", gear(Tools.CAMCORDER) == null and Session._tapes.is_empty())
+	await barrier("done", 2)
+	Net.leave()
+
+
+func _tape_client() -> void:
+	check("a friend can join", Net.join("Client", "127.0.0.1", port) == OK)
+	await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 30.0)
+	await barrier("given", 2)
+	check("the camcorder is in the friend's hands", await until(func() -> bool: return gear(Tools.CAMCORDER) != null and gear(Tools.CAMCORDER).holder_id == Net.my_id(), 5.0))
+	var camcorder := gear(Tools.CAMCORDER)
+	var cam := me().camcorder
+	await wait(0.1)
+	check("the prompt explains the camcorder", me().interact_prompt.contains("photo") and me().interact_prompt.contains("record a clip") and me().interact_prompt.contains("watch (0 saved)"))
+
+	# Filming.
+	cam.take_photo()
+	check("a photo is saved on the camcorder", await until(func() -> bool: return camcorder.recordings == 1 and not _tape_messages.is_empty(), 5.0))
+	check("the friend is told it's saved", _tape_messages.back() == "Photo saved on the camcorder (1/12).")
+	check("a photo flashes", me().net_flashes == 1)
+	cam.start_clip()
+	await wait(0.1)
+	check("filming lights the red light", cam.is_recording and me().net_recording and camcorder._model.get_node("RecLight").visible)
+	check("the prompt says how to stop", me().interact_prompt.contains("stop recording"))
+	await wait(1.4)
+	cam.stop_clip()
+	check("a clip is saved on the camcorder", await until(func() -> bool: return camcorder.recordings == 2, 5.0))
+	check("the red light goes off", not me().net_recording)
+	cam.start_clip()
+	await get_tree().physics_frame
+	cam.stop_clip()
+	check("a clip that's too short isn't kept", cam.message == "Too short to keep" and camcorder.recordings == 2)
+
+	# Watching.
+	cam.open_viewer()
+	check("playback opens on the newest recording", await until(func() -> bool: return cam.list_ready and cam.current_texture() != null, 5.0) and cam.current().kind == "clip" and cam.view_index == 1)
+	var opening := cam.current_texture()
+	await wait(0.4)
+	check("a clip plays", cam.current_texture() != null and cam.current_texture() != opening)
+	cam.play_time = cam.current().length + Camcorder.END_PAUSE + 0.01
+	check("a clip loops", cam.current_texture() == opening)
+	cam.show_next(1)
+	check("next shows the photo", await until(func() -> bool: return cam.current_texture() != null, 5.0) and cam.current().kind == "photo" and cam.view_index == 0)
+	cam.show_next(-1)
+	check("going back needs no new download", cam.current_texture() == opening and cam._asked.is_empty())
+	await wait(0.1)
+	check("the prompt says how to step through", me().interact_prompt.contains("next") and me().interact_prompt.contains("stop watching"))
+
+	# The host refuses footage it shouldn't keep.
+	var replies := _tape_messages.size()
+	Session.request_store_tape.rpc_id(1, camcorder.item_id, "photo", [PackedByteArray([1, 2, 3, 4])], PackedFloat32Array([0.0]), 0.0)
+	check("junk footage is refused", await until(func() -> bool: return _tape_messages.size() > replies, 3.0) and _tape_messages.back().contains("couldn't be saved"))
+	var jpeg := Image.create(32, 18, false, Image.FORMAT_RGB8).save_jpg_to_buffer(0.8)
+	Session.request_store_tape.rpc_id(1, camcorder.item_id + 1, "photo", [jpeg], PackedFloat32Array([0.0]), 0.0)
+	await wait(0.4)
+	check("nothing is saved to a camcorder you aren't holding", camcorder.recordings == 2 and _tape_messages.size() == replies + 1)
+
+	# Letting go of it ends playback.
+	Session.request_drop.rpc_id(1)
+	check("dropping the camcorder stops playback", await until(func() -> bool: return not cam.viewing, 3.0))
+	await barrier("filmed", 2)
+	await barrier("host_has_it", 2)
+	var lists := _tape_lists.size()
+	Session.request_tape_list.rpc_id(1, camcorder.item_id)
+	Session.request_tape_entry.rpc_id(1, camcorder.item_id, 1)
+	await wait(0.5)
+	check("only the holder can see what's on it", _tape_lists.size() == lists)
+	await barrier("friend_refused", 2)
+	await barrier("home", 2)
+	check("everyone sees the footage count after the day", gear(Tools.CAMCORDER) != null and gear(Tools.CAMCORDER).recordings == Tools.TAPE_LIMIT)
+	await barrier("done", 2)
+	check("the friend is told the host left", await until(func() -> bool: return _ended_reason == "The host left the game.", 10.0))
+
+
+
+## What a gacha prize is worth on average, in credits.
+func _gacha_worth(prize: String) -> float:
+	match prize:
+		"refund": return Rules.GACHA_REFUND
+		"gold": return Rules.GACHA_GOLD
+		"jackpot": return Rules.GACHA_JACKPOT
+		"gear", "rare":
+			var pool: Array[String] = Tools.GACHA_GEAR if prize == "gear" else Tools.GACHA_RARE
+			var total := 0.0
+			for kind in pool:
+				total += Tools.CATALOG[kind].price
+			return total / pool.size()
+	return 0.0
+
+
+func _remove_all_gear() -> void:
+	for thing: Scrap in Session.scrap_root.get_children():
+		if thing.is_tool():
+			Session.scrap_root.remove_child(thing)
+			thing.queue_free()
+
+
+## Flat speed this player is moving at right now.
+func _speed() -> float:
+	return Vector2(me().velocity.x, me().velocity.z).length()
+
+
+# --- More gear, and the capsule gacha ------------------------------------------------
+
+func _kit() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.goal_override = 5000
+	Session.results_seconds = 0.7
+	Session.open_ship()
+	await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 3.0)
+	check("the gacha is in the ship", Session.level.gacha_station != null)
+
+	# The terminal sells all of it.
+	Session.credits = 10000
+	me().teleport(Rules.TERMINAL_POS + Vector3(-1.2, 0.1, 0))
+	await wait(0.1)
+	for kind: String in [Tools.SHOTGUN, Tools.FLASHBANG, Tools.ADRENALINE, Tools.SCOOTER, Tools.BEACON]:
+		var before := Session.credits
+		Session.request_buy.rpc_id(1, kind)
+		check("the terminal sells the %s for $%d" % [kind, Tools.CATALOG[kind].price], Session.credits == before - Tools.CATALOG[kind].price and gear(kind) != null)
+	_remove_all_gear()
+	await wait(0.1)
+
+	# THE GACHA.
+	var at_gacha := Vector3(Rules.GACHA_POS.x - 1.9, 0.1, Rules.GACHA_POS.z)
+	me().rotation.y = -PI * 0.5
+	me().teleport(at_gacha)
+	await wait(0.1)
+	check("the gacha offers a pull", me().interact_prompt.begins_with("E: pull the gacha for $%d" % Rules.GACHA_PRICE))
+	Session.credits = 20
+	await wait(0.1)
+	check("the gacha says when the crew can't afford it", me().interact_prompt.contains("$%d a pull" % Rules.GACHA_PRICE))
+	Session.request_gacha.rpc_id(1)
+	check("a pull the crew can't afford is refused", Session.credits == 20 and not Session.gacha_busy() and Session.notice_text.begins_with("Not enough credits"))
+	Session.credits = 1000
+	me().teleport(Vector3(0, 0.1, -12.0))
+	await wait(0.1)
+	Session.request_gacha.rpc_id(1)
+	check("you can't pull from across the ship", Session.credits == 1000 and not Session.gacha_busy())
+	me().teleport(at_gacha)
+	await wait(0.1)
+	var expected := {"dud": 0, "refund": Rules.GACHA_REFUND, "gold": Rules.GACHA_GOLD, "jackpot": Rules.GACHA_JACKPOT}
+	for row_index in Rules.GACHA_TABLE.size():
+		var prize: String = Rules.GACHA_TABLE[row_index][1]
+		Session.gacha_rig = row_index
+		var before := Session.credits
+		var gear_before := Session.gear_count()
+		var started := Time.get_ticks_msec()
+		Session.request_gacha.rpc_id(1)
+		Session.request_gacha.rpc_id(1)
+		check("%s: a pull costs $%d, once" % [prize, Rules.GACHA_PRICE], Session.credits == before - Rules.GACHA_PRICE and Session.gacha_busy() and "gacha" in _effects)
+		if row_index == 0:
+			await wait(0.2)
+			check("the prompt says the capsule is rolling", me().interact_prompt.contains("rolling"))
+		await until(func() -> bool: return not Session.gacha_busy(), 5.0)
+		var seconds := (Time.get_ticks_msec() - started) / 1000.0
+		check("%s: the capsule rolls for about %.0f seconds (%.2f)" % [prize, Rules.GACHA_SECONDS, seconds], absf(seconds - Rules.GACHA_SECONDS) < 0.4)
+		check("%s: everyone sees the result" % prize, ("gacha_" + prize) in _effects)
+		if expected.has(prize):
+			check("%s: pays $%d" % [prize, expected[prize]], Session.credits == before - Rules.GACHA_PRICE + expected[prize] and Session.gear_count() == gear_before)
+		else:
+			var won: Scrap = null
+			for thing: Scrap in Session.scrap_root.get_children():
+				if thing.is_tool() and thing.position.distance_to(Session.gacha_tray()) < 0.01:
+					won = thing
+			var pool: Array[String] = Tools.GACHA_GEAR if prize == "gear" else Tools.GACHA_RARE
+			check("%s: a piece of gear rolls out on the tray" % prize, won != null and won.kind in pool and Session.gear_count() == gear_before + 1 and Session.credits == before - Rules.GACHA_PRICE)
+			if won != null:
+				won.position = Vector3(0, Scrap.FLOOR_HEIGHT, -12.0) # Out of the way of the prompt.
+		if prize == "jackpot":
+			check("the whole crew is told about a jackpot", Session.notice_text.contains("JACKPOT") and Session.notice_text.contains("Host won $%d" % Rules.GACHA_JACKPOT))
+	# Gear won with the crew's gear already full becomes credits instead.
+	while Session.gear_count() < Rules.TOOL_LIMIT:
+		Session._spawn_gear(Tools.FLASHBANG)
+	Session.gacha_rig = 2
+	var full_before := Session.credits
+	Session.request_gacha.rpc_id(1)
+	await until(func() -> bool: return not Session.gacha_busy(), 5.0)
+	check("gear won over the limit is paid out instead", Session.gear_count() == Rules.TOOL_LIMIT and Session.credits > full_before - Rules.GACHA_PRICE)
+	_remove_all_gear()
+	var pulls := 20000
+	var worth := 0.0
+	var seen := {}
+	Session.gacha_rig = -1
+	for pull in pulls:
+		var prize := Session._roll_gacha()
+		seen[prize] = true
+		worth += _gacha_worth(prize)
+	check("over many pulls the gacha keeps a little ($%.2f per $%d pull)" % [worth / pulls, Rules.GACHA_PRICE], worth / pulls < Rules.GACHA_PRICE * 1.02 and worth / pulls > Rules.GACHA_PRICE * 0.8)
+	check("every gacha prize really comes up", seen.size() == Rules.GACHA_TABLE.size())
+	# A pull just before take-off still pays out.
+	Session.start_run()
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0)
+	me().teleport(at_gacha)
+	await wait(0.1)
+	Session.gacha_rig = Rules.GACHA_TABLE.size() - 1
+	var before_takeoff := Session.credits
+	Session.request_gacha.rpc_id(1)
+	Session._end_round()
+	check("a capsule rolling at take-off still pays out", Session.credits >= before_takeoff - Rules.GACHA_PRICE + Rules.GACHA_JACKPOT and not Session.gacha_busy())
+	await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0)
+	Session.gacha_rig = -1
+
+	# THE SHOTGUN.
+	await _fresh_round("foundry")
+	var gun := _give(Tools.SHOTGUN)
+	check("a shotgun comes loaded", gun.charges == 3 and gun.describe() == "Shotgun (3/3)")
+	var stalker := Session.entity_of_kind("stalker")
+	var full := stalker.hits_left()
+	await _face_off(stalker, 6.0)
+	await _use_gear()
+	check("one blast takes %d hits off the Stalker" % Tools.SHOTGUN_BLOWS, stalker.hits_left() == full - Tools.SHOTGUN_BLOWS and stalker.net_stunned and gun.charges == 2 and "shot" in _effects)
+	await _face_off(stalker, 6.0)
+	await _use_gear()
+	check("a second blast finishes it", Session.entity_of_kind("stalker") == null and gun.charges == 1)
+	_park_everything()
+	var shots := _effects.count("shot")
+	await _use_gear()
+	check("a blast that hits nothing still uses a shell", gun.charges == 0 and _effects.count("shot") == shots + 1)
+	await _use_gear()
+	check("an empty shotgun only clicks", "empty" in _effects and gun.charges == 0)
+	await wait(0.1)
+	check("the HUD says it's empty", me().interact_prompt.contains("empty until orbit"))
+	gun.charges = 3
+	Session.player_states[999] = {"hp": 100, "alive": true}
+	var crewmate: Player = Session._spawn_player({"peer": 999, "name": "Crewmate", "index": 1, "pos": Vector3(0, 0, FACE_OFF_Z - 5.0)})
+	Session.players_root.add_child(crewmate)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, FACE_OFF_Z))
+	await _use_gear()
+	check("a blast hurts a crewmate in the way badly", Session.player_states[999].hp == 100 - Tools.SHOTGUN_CREW_DAMAGE)
+	Session.players_root.remove_child(crewmate)
+	crewmate.queue_free()
+	Session.player_states.erase(999)
+	await _fresh_round("cryo")
+	gun = _give(Tools.SHOTGUN)
+	var watcher := Session.entity_of_kind("watcher")
+	await _face_off(watcher, 6.0)
+	await _use_gear()
+	check("a blast can't kill a Watcher, but it rocks it", watcher.get_parent() == Session.entity_root and watcher.net_stunned)
+
+	# THE FLASHBANG.
+	await _fresh_round("reactor")
+	_give(Tools.FLASHBANG)
+	var listener: Entity = _all("listener")[0]
+	await _face_off(listener, 6.0)
+	await wait(1.0)
+	var thrown_at := Time.get_ticks_msec()
+	Session.request_use_item.rpc_id(1)
+	check("the flashbang goes off almost at once", await until(func() -> bool: return gear(Tools.FLASHBANG) == null, 3.0) and (Time.get_ticks_msec() - thrown_at) / 1000.0 < Tools.FUSE_SECONDS)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	check("it stuns a hunter in sight for %.1f seconds" % Tools.FLASH_STUN, listener.net_stunned and listener._stun_timer > Tools.FLASH_STUN - 0.3 and listener._stun_timer <= Tools.FLASH_STUN)
+	check("it blinds you harder than a stun grenade", Session.blind_seconds > Tools.BLIND_SECONDS and "flashbang" in _effects)
+
+	# ADRENALINE.
+	await _fresh_round("foundry")
+	_give(Tools.ADRENALINE)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, 3.0))
+	await _use_gear()
+	check("the shot is used up and the boost begins", gear(Tools.ADRENALINE) == null and me().boost_left > Tools.ADRENALINE_SECONDS - 0.5 and "inject" in _effects)
+	check("the HUD says so", Session.notice_text.begins_with("Adrenaline!"))
+	me().bot_move = Vector2(0, -1)
+	for frame in 6:
+		await get_tree().physics_frame
+	check("adrenaline makes you %d%% faster (%.2f m/s)" % [roundi((Tools.ADRENALINE_SPEED - 1.0) * 100.0), _speed()], absf(_speed() - Player.WALK_SPEED * Tools.ADRENALINE_SPEED) < 0.1)
+	me().boost_left = 0.0
+	for frame in 3:
+		await get_tree().physics_frame
+	check("and wears off", absf(_speed() - Player.WALK_SPEED) < 0.1)
+	me().bot_move = Vector2.ZERO
+
+	# THE HOVER SCOOTER.
+	var board := _give(Tools.SCOOTER)
+	me().teleport(Vector3(0, 0.1, 3.0))
+	await wait(0.1)
+	check("the prompt offers a ride", me().interact_prompt.contains("ride the scooter"))
+	me().toggle_ride()
+	check("you can hop on", me().net_riding)
+	me().bot_move = Vector2(0, -1)
+	for frame in 6:
+		await get_tree().physics_frame
+	var ride_speed := Tools.SCOOTER_SPEED * (1.0 - Session.carried_weight(1))
+	check("the scooter goes %.1f m/s (%.2f)" % [ride_speed, _speed()], absf(_speed() - ride_speed) < 0.1)
+	check("the board is under your feet", Vector2(board.position.x - me().position.x, board.position.z - me().position.z).length() < 0.05)
+	me().bot_move = Vector2.ZERO
+	me().teleport(Vector3(0, 0.1, 3.0))
+	await wait(0.1)
+	check("the prompt offers to step off", me().interact_prompt.contains("step off"))
+	Session.request_drop.rpc_id(1)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	check("dropping the scooter puts you back on your feet", not me().net_riding and board.holder_id == 0)
+
+	# THE RECALL BEACON.
+	await _fresh_round("foundry")
+	var loot := item(1)
+	loot.holder_id = 1
+	_give(Tools.BEACON)
+	me().teleport(Vector3(0, 0.1, 3.0))
+	await _use_gear()
+	check("the beacon charges up first", not Rules.in_ship(me().position) and "beacon" in _effects and gear(Tools.BEACON) != null)
+	check("then beams you into the ship", await until(func() -> bool: return Rules.in_ship(me().position), 3.0))
+	await wait(0.1)
+	check("the beacon is used up, and you keep what you carry", gear(Tools.BEACON) == null and loot.holder_id == 1 and not loot.stowed and "teleport" in _effects)
+	await wait(1.5)
+	_give(Tools.BEACON)
+	var fizzles := _effects.count("fizzle")
+	await _use_gear()
+	check("in the ship the beacon does nothing and isn't used up", gear(Tools.BEACON) != null and _effects.count("fizzle") == fizzles + 1)
+	me().teleport(Vector3(0, 0.1, 3.0))
+	await wait(1.5)
+	await _use_gear()
+	Session.request_drop.rpc_id(1)
+	await wait(Tools.BEACON_SECONDS + 0.4)
+	check("letting go of the beacon while it charges cancels the beam", not Rules.in_ship(me().position) and gear(Tools.BEACON) != null)
 	Net.leave()

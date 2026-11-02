@@ -37,6 +37,10 @@ var _phone_panel: PanelContainer
 var _phone_view: TextureRect
 var _phone_status: Label
 var _phone_toast: Label
+var _cam_panel: PanelContainer
+var _stamina_fill: StyleBoxFlat
+var _cam_view: TextureRect
+var _cam_status: Label
 var _settings_menu: SettingsMenu
 var _settings_open := false
 var _paused := false
@@ -58,6 +62,7 @@ var _terminal: PanelContainer
 var _terminal_credits: Label
 var _terminal_message: Label
 var _terminal_buttons := {} # gear kind -> its Buy button
+var _terminal_list: ScrollContainer
 var _terminal_open := false
 
 
@@ -101,7 +106,10 @@ func _process(_delta: float) -> void:
 		var next: Dictionary = MapThemes.get_theme(Session.next_map)
 		_top_label.text = "IN ORBIT    Level %d    Day %d of %d    Goal $%d / $%d    Credits $%d" % [
 			Session.level_number, Session.day, Session.days_per_level, Session.level_banked, Session.quota, Session.credits]
-		_banner_label.text = "IN ORBIT\nNext stop: %s\nBuy gear at the terminal, then pull the lever at the console to land." % next.name
+		var next_site: Dictionary = Rules.SITE_INFO.get(Session.next_site, Rules.SITE_INFO.medium)
+		var minutes := Rules.round_seconds(Session.next_site if Rules.SITE_INFO.has(Session.next_site) else "medium") / 60.0
+		_banner_label.text = "IN ORBIT\nNext stop: %s, %s (%s minutes on the clock)\nBuy gear at the terminal, then pull the lever at the console to land." % [
+			next.name, next_site.name.to_lower(), String.num(minutes, 1).trim_suffix(".0")]
 		_update_crew_panel()
 	else:
 		var seconds := int(ceil(Session.time_left))
@@ -109,7 +117,8 @@ func _process(_delta: float) -> void:
 		_top_label.text = "%s    Level %d    Day %d of %d    Time %d:%02d    In ship $%d    Goal $%d / $%d" % [
 			theme.name, Session.level_number, Session.day, Session.days_per_level, seconds / 60, seconds % 60,
 			Session.in_ship_value, Session.level_banked + Session.in_ship_value, Session.quota]
-		_banner_label.text = "%s\n%s\n%s" % [theme.name.to_upper(), theme.tagline, theme.rule]
+		var site_name: String = Rules.SITE_INFO.get(Session.site, Rules.SITE_INFO.medium).name
+		_banner_label.text = "%s  -  %s\n%s\n%s" % [theme.name.to_upper(), site_name.to_upper(), theme.tagline, theme.rule]
 	_crew_panel.visible = in_orbit
 	# The terminal covers the middle of the screen, so nothing else is shown behind it.
 	_banner_label.visible = Session.banner_seconds > 0.0 and not _terminal_open
@@ -124,6 +133,8 @@ func _process(_delta: float) -> void:
 	if player != null:
 		_prompt_label.text = player.interact_prompt
 		_stamina_bar.value = player.stamina
+		# Adrenaline turns the stamina bar gold while it lasts.
+		_stamina_fill.bg_color = Color(1.0, 0.75, 0.2) if player.boost_left > 0.0 else Color(0.3, 0.7, 0.3)
 	_update_phone(player)
 	_update_backpack()
 	var state: Dictionary = Session.player_states.get(Net.my_id(), {"hp": 0})
@@ -157,11 +168,21 @@ func _update_backpack() -> void:
 
 func _update_phone(player: Player) -> void:
 	var phone: PhoneCamera = player.phone if player != null else null
+	var camcorder: Camcorder = player.camcorder if player != null else null
 	_phone_panel.visible = phone != null and phone.is_up
-	_phone_toast.visible = phone != null and phone.message_seconds > 0.0
+	_update_camcorder(camcorder)
+	# One message at a time: the crew's news first, then the camcorder's, then the phone's.
+	var toast := ""
+	if Session.notice_seconds > 0.0:
+		toast = Session.notice_text
+	elif camcorder != null and camcorder.message_seconds > 0.0:
+		toast = camcorder.message
+	elif phone != null and phone.message_seconds > 0.0:
+		toast = phone.message
+	_phone_toast.text = toast
+	_phone_toast.visible = not toast.is_empty()
 	if phone == null:
 		return
-	_phone_toast.text = phone.message
 	if not phone.is_up:
 		return
 	if _phone_view.texture == null or _phone_view.texture != phone.texture():
@@ -174,6 +195,31 @@ func _update_phone(player: Player) -> void:
 			Settings.prompt_for("use_item"), Settings.prompt_for("phone_record"),
 			PhoneCamera.RECORD_SECONDS, Settings.prompt_for("phone")]
 		_phone_status.remove_theme_color_override("font_color")
+
+
+## The camcorder's flip-out screen: what it sees while filming, and its footage while
+## you watch it back.
+func _update_camcorder(camcorder: Camcorder) -> void:
+	_cam_panel.visible = camcorder != null and (camcorder.viewing or camcorder.is_recording)
+	if not _cam_panel.visible:
+		return
+	if camcorder.is_recording:
+		_cam_view.texture = camcorder.texture()
+		_cam_status.text = "REC  %.1f / %.0f s" % [camcorder.record_elapsed, Tools.CLIP_SECONDS]
+		_cam_status.add_theme_color_override("font_color", Color(1.0, 0.3, 0.25))
+		return
+	_cam_status.remove_theme_color_override("font_color")
+	_cam_view.texture = camcorder.current_texture()
+	var entry := camcorder.current()
+	if camcorder.list_ready and camcorder.listing.is_empty():
+		_cam_status.text = "Nothing recorded yet"
+	elif entry.is_empty() or camcorder.is_loading():
+		_cam_status.text = "Loading..."
+	elif entry.kind == "photo":
+		_cam_status.text = "PHOTO  %d / %d    by %s" % [camcorder.view_index + 1, camcorder.listing.size(), entry.by]
+	else:
+		var at := minf(fmod(camcorder.play_time, entry.length + Camcorder.END_PAUSE), entry.length)
+		_cam_status.text = "PLAY  %d / %d    %.1f / %.1f s    by %s" % [camcorder.view_index + 1, camcorder.listing.size(), at, entry.length, entry.by]
 
 
 func _open_captures_folder() -> void:
@@ -724,6 +770,7 @@ func _build_hud() -> void:
 	_health_bar = _bar(Vector2(20, -70), Rules.PLAYER_MAX_HP, Color(0.8, 0.2, 0.2))
 	_stamina_bar = _bar(Vector2(20, -40), 1.0, Color(0.3, 0.7, 0.3))
 	_stamina_bar.step = 0.01
+	_stamina_fill = _stamina_bar.get_theme_stylebox("fill")
 
 
 func _build_backpack_slots() -> void:
@@ -781,10 +828,21 @@ func _build_terminal() -> void:
 	_label(box, "SHIP TERMINAL", 28)
 	_label(box, "Gear is paid for with the crew's credits. Every dollar of scrap you bank earns one.")
 	_terminal_credits = _label(box, "", 18)
+	# The list scrolls, so the terminal fits any screen however much gear there is.
+	var scroller := ScrollContainer.new()
+	scroller.custom_minimum_size = Vector2(0, 380)
+	scroller.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroller.follow_focus = true
+	box.add_child(scroller)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 10)
+	scroller.add_child(list)
+	_terminal_list = scroller
 	for kind: String in Tools.ORDER:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
-		box.add_child(row)
+		list.add_child(row)
 		var about := _label(row, "%s\n%s" % [kind.to_upper(), Tools.CATALOG[kind].about], 15)
 		about.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var buy := _button(row, "Buy", _buy.bind(kind))
@@ -819,6 +877,32 @@ func _build_phone_panel() -> void:
 	_phone_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_phone_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_phone_panel.visible = false
+	# The camcorder's screen sits in the same corner; the phone and it are never up together.
+	_cam_panel = PanelContainer.new()
+	_cam_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var camcorder_casing: StyleBoxFlat = casing.duplicate()
+	camcorder_casing.bg_color = Color(0.09, 0.09, 0.1)
+	camcorder_casing.border_color = Color(0.35, 0.35, 0.38)
+	camcorder_casing.set_border_width_all(3)
+	camcorder_casing.set_corner_radius_all(6)
+	_cam_panel.add_theme_stylebox_override("panel", camcorder_casing)
+	_hud.add_child(_cam_panel)
+	var screen_box := VBoxContainer.new()
+	screen_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cam_panel.add_child(screen_box)
+	_cam_view = TextureRect.new()
+	_cam_view.custom_minimum_size = Vector2(352, 198) # Narrow enough to clear the prompt text above the backpack.
+	_cam_view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_cam_view.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_cam_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen_box.add_child(_cam_view)
+	_cam_status = _label(screen_box, "", 14)
+	_cam_status.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_cam_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cam_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
+	_cam_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_cam_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_cam_panel.visible = false
 	_phone_toast = _label(_hud, "", 20)
 	_phone_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_phone_toast.anchor_right = 1.0

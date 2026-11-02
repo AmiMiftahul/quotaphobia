@@ -12,6 +12,7 @@ within 4 days.
 | Shift / Space | Sprint / jump (when dead, Space switches which crewmate you watch) |
 | E / G | Pick up, or use the console and terminal / drop |
 | Left click | Use the gear in your hands (or take a photo with the phone up) |
+| R / V | Record a clip / watch the footage, with the phone or camcorder |
 | F | Flashlight |
 | Esc | Menu |
 
@@ -74,7 +75,13 @@ but it's worth nothing when sold.
 |---|---|---|
 | Shovel | $30 | Left click to swing, once every 0.9 seconds. Each hit staggers a hunter for 0.6 seconds, so it always gets a moment to strike back. On level 1 a Stalker takes 4 hits, a Listener 3 and a Mimic 1. Nothing can hurt a Watcher. It also bonks crewmates (20 damage). |
 | Stun grenade | $25 | Left click to throw it about 7 m. After 1.5 seconds it stuns every hunter within 9 m that can see it, for 6 seconds. Players who look at it get a white screen. One use. |
+| Flashbang | $15 | Thrown like a stun grenade, but it bangs almost on landing (0.6 seconds) and reaches 13 m. It only stuns for 3.5 seconds, and blinds anyone looking for 4. One use. |
+| Shotgun | $110 | Left click fires up to 18 m. One blast counts as 3 shovel hits, so a level 1 Stalker drops in two. A blast hurts a crewmate in the way for 60. A miss still uses a shell. 3 shells, refilled in orbit. |
+| Adrenaline shot | $20 | Left click to inject: 12 seconds of 40% more speed and stamina that doesn't run out. One use. |
+| Hover scooter | $80 | Left click to hop on and ride at 8 m/s with no stamina. You can't jump, it's as loud as sprinting, and dropping it puts you back on your feet. Click again to step off. |
+| Recall beacon | $50 | Left click, and 2 seconds later you're beamed into the ship with everything you carry. Only on the ground, outside the ship. Dropping it while it charges cancels the beam. One use. |
 | Zap gun | $70 | Aim and left click to freeze the hunter you're pointing at for 5 seconds, up to 15 m away. 3 charges, refilled every time you're back in orbit. A miss costs nothing. |
+| Camcorder | $40 | Left click takes a photo, R films a clip of up to 5 seconds. It keeps your last 12, and V plays them back on its screen. See below. |
 
 Hunters grow stronger each level, up to level 8. At full strength they move 21% faster,
 hit 56% harder, shake off stuns 35% sooner, and take 2 more shovel hits (Mimics still go down
@@ -106,6 +113,25 @@ again, up to $9,999 for one piece of scrap. Only scrap is accepted, never gear, 
 runs at a time. The host rolls every bet, so nobody can cheat, and the whole crew sees and hears
 the result. The odds are `GAMBLE_TABLE` in `scripts/rules.gd`.
 
+## The capsule gacha
+
+Across the door from Scrap Slots stands the **capsule gacha**. Walk up and press **E** to pull
+for $30 of the crew's credits, in orbit or on the ground. A capsule rolls out after 2 seconds:
+
+| Chance | Capsule |
+|---|---|
+| 35% | Empty |
+| 28% | $15 back |
+| 22% | Everyday gear: a shovel, stun grenade, flashbang or adrenaline shot |
+| 10% | Rare gear: a zap gun, shotgun, hover scooter, recall beacon or camcorder |
+| 4% | Gold: $150 |
+| 1% | **Jackpot: $750**, announced to the whole crew |
+
+Gear rolls out on the machine's tray. If the crew already owns 12 pieces, you get its price in
+credits instead. On average a pull returns about $29.65 of its $30, so it's a gamble, not free
+money. A capsule still rolling when the ship takes off pays out anyway. The host rolls every
+pull. The odds are `GACHA_TABLE` in `scripts/rules.gd`, and the prizes in `scripts/tools.gd`.
+
 ## The phone
 
 Press **P** to raise your phone. **Left click** (the same button that uses gear) takes a photo
@@ -118,10 +144,45 @@ only ever go on your own computer: choose **My photos and videos** on the main m
 folder. Photos are 1280 x 720 PNG files, and videos are 640 x 360 `.mov` files at 15 frames a
 second.
 
+## The camcorder
+
+The camcorder is gear you buy at the terminal. Unlike the phone, what it films lives **inside
+the game, on the camcorder itself**. Hand it to a crewmate, or leave it on the floor, and whoever
+picks it up can watch everything on it.
+
+| Button | While holding it | While watching |
+|---|---|---|
+| Left click | Take a photo, with the flash | Next recording |
+| R | Start filming; press again to stop (it stops by itself at 5 seconds) | Previous recording |
+| V | Watch what's on it | Stop watching |
+
+On a controller these are RB, LB and D-pad down. All of them can be rebound in Settings.
+
+It holds 12 recordings. A 13th records over the oldest. While you film, its screen shows what
+it sees and other players see its red light. Each recording remembers who filmed it. Bring the
+camcorder home and its footage is still on it the next day; leave it outside and the footage is
+lost with it. The footage is kept by the host and only sent to the player holding the
+camcorder, so the crew's connection isn't slowed down. Photos are 640 x 360, and clips are
+320 x 180 at 12 pictures a second, with no sound. The numbers are in `scripts/tools.gd`.
+
 ## Maps and creatures
 
 Each run visits the four maps in a random order, and threats grow as rounds pass. To change
 a map, or add one, edit `scripts/map_themes.gd`.
+
+Every day also lands on a site of a different **size**. Each three days bring one of each, in a
+random order, and never the same size twice in a row. The console and the landing banner say
+which one is next.
+
+| Site | Rooms per side (level 1 / level 3+) | Big halls | Time on the clock |
+|---|---|---|---|
+| Small outpost | 4 / 7 | about 1 | 4 minutes |
+| Facility | 5 / 8 | about 2 | 5 minutes |
+| Sprawling complex | 7 / 10 | about 4, some 6 or 9 rooms big | 6.5 minutes |
+
+A **hall** is a block of rooms with no walls between them, held up by pillars, with a big lamp
+in the middle. Bigger sites also hold more scrap. The Cryo Vault has the most halls and the Bio
+Lab the fewest. Sizes are in `SITE_INFO` in `scripts/rules.gd`.
 
 | Map | Vibe | Its rule | Who's there |
 |---|---|---|---|
@@ -162,6 +223,9 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/player.gd`, `scrap.gd` | Players and items. |
 | `scripts/tools.gd` | The gear sold at the terminal: prices, what each piece does, and how it looks. |
 | `scripts/gamble_station.gd` | How Scrap Slots looks and spins. The betting itself is in `session.gd`. |
+| `scripts/gacha_station.gd` | How the capsule gacha looks and rolls. The prizes are picked in `session.gd`. |
+| `scripts/camcorder.gd` | Filming and playing back with the camcorder. Storing footage is in `session.gd`. |
+| `scripts/phone_camera.gd` | The phone, which saves photos and videos to your computer. |
 | `scripts/monster.gd`, `scripts/entities/` | Every creature and helper. |
 | `scripts/map_themes.gd` | Every map's look, sound, rules and residents. |
 | `scripts/main.gd` | The title screen, menus and HUD, and the look they share. |
@@ -187,10 +251,11 @@ Run these after every change. Both must report no problems.
 python3 tests/run_tests.py
 ```
 
-That runs rule checks plus a real session: four separate copies of the game on real network
+That runs rule checks, a two-player camcorder test (one films, the other picks it up and
+watches), and a real session: four separate copies of the game on real network
 connections, a fifth player who must be refused, and a friend who joins late while the ship is
-in orbit. It covers cheating attempts, deaths, disconnects, buying and using gear, and a fake
-database.
+in orbit. It covers cheating attempts, deaths, disconnects, buying and using every piece of gear, every
+gacha prize, and a fake database.
 
 ```bash
 tools/Godot.app/Contents/MacOS/Godot --path . res://tests/test_main.tscn -- role=ui

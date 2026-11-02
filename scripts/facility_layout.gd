@@ -19,9 +19,17 @@ const SCRAP_MODELS := {
 const PROP_CORNER := 3.2 # Props sit in room corners, clear of doors and walkways.
 const SCRAP_CLEARANCE := 2.2 # Scrap never lands where a prop could be.
 const MIN_ENTITY_ROOMS := 3 # Route length from the entry, so nothing starts on top of the crew.
+# Big open halls are blocks of rooms with no walls between them. Large sites can also
+# have the biggest ones.
+const HALL_SHAPES: Array[Vector2i] = [Vector2i(2, 2), Vector2i(2, 2), Vector2i(2, 2), Vector2i(2, 1), Vector2i(1, 2)]
+const BIG_HALL_SHAPES: Array[Vector2i] = [Vector2i(3, 2), Vector2i(2, 3), Vector2i(3, 3)]
+const HALL_TRIES := 40
 
 var size := 0
 var map_id := "foundry"
+var site := "medium"
+var halls: Array[Rect2i] = []
+var pillars: Array[Vector3] = [] # Where four rooms of a hall meet, holding up the roof.
 var theme: Dictionary
 var monster_spawn := Vector2i.ZERO
 var light_cells: Array[Vector2i] = []
@@ -30,16 +38,20 @@ var props: Array[Dictionary] = []
 var floor_details: Array[Vector3] = []
 var entity_spawns: Array[Dictionary] = []
 var _open := {}
+var _hall_of := {} # cell -> its index in halls
+var _pillar_corners := {} # Grid corners with a pillar on them. Corner (x, y) is the top-left of cell (x, y).
 var _rng := RandomNumberGenerator.new()
 
 
-func _init(seed_value: int, grid_size: int, round_number: int, required_value: int, map: String = "foundry") -> void:
+func _init(seed_value: int, grid_size: int, round_number: int, required_value: int, map: String = "foundry", site_size: String = "medium") -> void:
 	_rng.seed = seed_value
 	size = grid_size
 	map_id = map
+	site = site_size
 	theme = MapThemes.get_theme(map)
 	_carve_maze()
 	_add_loops()
+	_merge_halls()
 	_open[_edge_key(SHIP_CELL, ENTRY_CELL)] = true
 	monster_spawn = _farthest_cell_from_entry()
 	for cell in all_cells():
@@ -64,6 +76,22 @@ func all_cells() -> Array[Vector2i]:
 
 func is_open(a: Vector2i, b: Vector2i) -> bool:
 	return _open.has(_edge_key(a, b))
+
+
+## True when both rooms belong to the same hall, so there's no wall between them at all.
+func is_merged(a: Vector2i, b: Vector2i) -> bool:
+	return _hall_of.has(a) and _hall_of.get(b, -1) == _hall_of[a]
+
+
+## Which hall a room is part of, or -1 for an ordinary room.
+func hall_at(cell: Vector2i) -> int:
+	return _hall_of.get(cell, -1)
+
+
+## The middle of a hall, on the floor.
+func hall_center(index: int) -> Vector3:
+	var block := halls[index]
+	return (cell_center(block.position) + cell_center(block.end - Vector2i.ONE)) * 0.5
 
 
 static func cell_center(cell: Vector2i) -> Vector3:
@@ -113,7 +141,7 @@ func fingerprint() -> int:
 	var entities: Array = []
 	for entity in entity_spawns:
 		entities.append([entity.kind, entity.pos])
-	return hash([map_id, size, edges, scrap, monster_spawn, prop_data, entities])
+	return hash([map_id, site, size, edges, halls, pillars, scrap, monster_spawn, prop_data, entities])
 
 
 func _edge_key(a: Vector2i, b: Vector2i) -> Vector4i:
@@ -150,6 +178,37 @@ func _add_loops() -> void:
 				_open[_edge_key(cell, next)] = true
 
 
+## Turns some blocks of rooms into big open halls. Blocks never overlap, and the entry
+## room stays an ordinary room, so the ship always opens onto the same kind of place.
+func _merge_halls() -> void:
+	var wanted := roundi(Rules.SITE_INFO[site].halls * theme.hall_scale)
+	var shapes: Array[Vector2i] = HALL_SHAPES.duplicate()
+	if site == "large":
+		shapes.append_array(BIG_HALL_SHAPES)
+	for attempt in HALL_TRIES:
+		if halls.size() >= wanted:
+			break
+		var shape := shapes[_rng.randi_range(0, shapes.size() - 1)]
+		if shape.x > size or shape.y > size:
+			continue
+		var block := Rect2i(Vector2i(_rng.randi_range(0, size - shape.x), _rng.randi_range(0, size - shape.y)), shape)
+		if block.has_point(ENTRY_CELL) or halls.any(func(other: Rect2i) -> bool: return other.intersects(block)):
+			continue
+		var index := halls.size()
+		halls.append(block)
+		for y in range(block.position.y, block.end.y):
+			for x in range(block.position.x, block.end.x):
+				var cell := Vector2i(x, y)
+				_hall_of[cell] = index
+				for dir: Vector2i in [Vector2i(1, 0), Vector2i(0, 1)]:
+					if block.has_point(cell + dir):
+						_open[_edge_key(cell, cell + dir)] = true
+		for y in range(block.position.y + 1, block.end.y):
+			for x in range(block.position.x + 1, block.end.x):
+				_pillar_corners[Vector2i(x, y)] = true
+				pillars.append(cell_center(Vector2i(x, y)) - Vector3(CELL, 0, CELL) * 0.5)
+
+
 func _farthest_cell_from_entry() -> Vector2i:
 	var best := ENTRY_CELL
 	var best_length := 0
@@ -167,7 +226,9 @@ func _place_props() -> void:
 		if cell == ENTRY_CELL:
 			continue
 		for corner: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
-			if _rng.randf() < theme.prop_chance:
+			# The floor around a pillar stays clear, so halls feel open.
+			var grid_corner := cell + Vector2i(1 if corner.x > 0 else 0, 1 if corner.y > 0 else 0)
+			if _rng.randf() < theme.prop_chance and not _pillar_corners.has(grid_corner):
 				var model: String = names[_rng.randi_range(0, names.size() - 1)]
 				props.append({
 					"model": model,
@@ -189,7 +250,9 @@ func _random_room_offset() -> Vector3:
 
 func _place_scrap(round_number: int, required_value: int) -> void:
 	var total := 0
-	var count := 8 + 2 * round_number
+	# Bigger sites hold more scrap than usual for the round, smaller ones less.
+	var usual := Rules.grid_size(round_number)
+	var count := maxi(4, roundi((8 + 2 * round_number) * float(size * size) / (usual * usual)))
 	var kinds: Array = SCRAP_MODELS.keys()
 	# Always leave 50% more value than the quota, so every round can be won.
 	while scrap_spawns.size() < count or total < int(required_value * 1.5):

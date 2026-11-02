@@ -69,7 +69,8 @@ const REBINDABLE := [
 	["flashlight", "Flashlight"],
 	["phone", "Phone"],
 	["use_item", "Use item / take photo"],
-	["phone_record", "Record 5 seconds"],
+	["phone_record", "Record a clip"],
+	["playback", "Watch camcorder footage"],
 ]
 # On a controller, moving is always the left stick and looking the right stick.
 const PAD_REBINDABLE := [
@@ -81,16 +82,19 @@ const PAD_REBINDABLE := [
 	["flashlight", "Flashlight"],
 	["phone", "Phone"],
 	["use_item", "Use item / take photo"],
-	["phone_record", "Record 5 seconds"],
+	["phone_record", "Record a clip"],
+	["playback", "Watch camcorder footage"],
 ]
 const DEFAULT_KEYS := {
 	"move_forward": "key:87", "move_back": "key:83", "move_left": "key:65", "move_right": "key:68",
 	"sprint": "key:4194325", "jump": "key:32", "interact": "key:69", "drop": "key:71", "flashlight": "key:70",
 	"phone": "key:80", "use_item": "mouse:1", "phone_record": "key:82", "cycle_item": "key:81",
+	"playback": "key:86",
 }
 const DEFAULT_PAD := {
 	"sprint": "axis:5", "jump": "joy:0", "interact": "joy:2", "drop": "joy:1", "flashlight": "joy:3",
 	"phone": "joy:11", "use_item": "joy:10", "phone_record": "joy:9", "cycle_item": "joy:13",
+	"playback": "joy:12",
 }
 const STICK_ACTIONS := {
 	"move_forward": [JOY_AXIS_LEFT_Y, -1.0], "move_back": [JOY_AXIS_LEFT_Y, 1.0],

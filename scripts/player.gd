@@ -41,7 +41,10 @@ var net_flashes := 0:
 			if not is_local_player:
 				Sfx.play_3d("click", position, -2.0, 18.0)
 		net_flashes = count
+var net_riding := false # Standing on a hover scooter.
+var boost_left := 0.0 # Seconds of adrenaline left. Only the player's own machine uses it.
 var phone: PhoneCamera
+var camcorder: Camcorder
 var is_local_player := false
 var stamina := 1.0
 var interact_prompt := ""
@@ -67,6 +70,7 @@ var _focus_item: Scrap
 var _focus_console := false
 var _focus_terminal := false
 var _focus_gamble := false
+var _focus_gacha := false
 var _spectate_index := 0
 var _attack_show := 0.0
 
@@ -117,7 +121,7 @@ func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3, skin:
 	_backpack_model.position = Vector3(0.0, 0.95, 0.42)
 	_backpack_model.visible = false
 	add_child(_backpack_model)
-	NetSync.attach(self, [^":net_pos", ^":net_yaw"], [^":net_flashlight", ^":net_phone_up", ^":net_recording", ^":net_flashes"])
+	NetSync.attach(self, [^":net_pos", ^":net_yaw"], [^":net_flashlight", ^":net_phone_up", ^":net_recording", ^":net_flashes", ^":net_riding"])
 
 
 ## What other players see: a phone held up, a red dot while recording, and the flash.
@@ -181,6 +185,10 @@ func _ready() -> void:
 	phone.name = "Phone"
 	add_child(phone)
 	phone.setup(self)
+	camcorder = Camcorder.new()
+	camcorder.name = "Camcorder"
+	add_child(camcorder)
+	camcorder.setup(self)
 
 
 func _apply_settings() -> void:
@@ -221,8 +229,11 @@ func _physics_process(delta: float) -> void:
 		_label.visible = is_alive()
 		_animate_and_step(delta)
 		return
+	if net_riding and (not is_alive() or not _holding(Tools.SCOOTER)):
+		net_riding = false # Dying or letting go of the scooter puts you back on your feet.
 	if not is_alive():
 		phone.put_away()
+		camcorder.close_viewer()
 		_flashlight.visible = false
 		interact_prompt = "You died. Press %s to watch a crewmate." % Settings.prompt_for("jump")
 		_follow_teammate()
@@ -293,16 +304,23 @@ func _move(delta: float) -> void:
 	var can_act := input_enabled and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	if can_act:
 		move += Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	var sprinting := can_act and Input.is_action_pressed("sprint") and stamina > 0.0 and move != Vector2.ZERO
+	var boosted := boost_left > 0.0
+	boost_left = maxf(0.0, boost_left - delta)
+	var sprinting := can_act and not net_riding and Input.is_action_pressed("sprint") and stamina > 0.0 and move != Vector2.ZERO
 	var regen: float = STAMINA_REGEN * (Session.layout.theme.stamina_regen if Session.layout != null else 1.0)
-	stamina = clampf(stamina + (-STAMINA_DRAIN if sprinting else regen) * delta, 0.0, 1.0)
-	var speed := (SPRINT_SPEED if sprinting else WALK_SPEED) * (1.0 - Session.carried_weight(peer_id))
+	stamina = clampf(stamina + (-STAMINA_DRAIN if sprinting and not boosted else regen) * delta, 0.0, 1.0)
+	var speed := SPRINT_SPEED if sprinting else WALK_SPEED
+	if net_riding:
+		speed = Tools.SCOOTER_SPEED
+	if boosted:
+		speed *= Tools.ADRENALINE_SPEED
+	speed *= 1.0 - Session.carried_weight(peer_id)
 	var direction := (transform.basis * Vector3(move.x, 0.0, move.y)).normalized()
 	velocity.x = direction.x * speed
 	velocity.z = direction.z * speed
 	if is_on_floor():
 		velocity.y = 0.0
-		if can_act and Input.is_action_just_pressed("jump"):
+		if can_act and not net_riding and Input.is_action_just_pressed("jump"):
 			velocity.y = JUMP_SPEED
 	else:
 		velocity.y -= GRAVITY * delta
@@ -314,6 +332,7 @@ func _update_focus() -> void:
 	_focus_console = false
 	_focus_terminal = false
 	_focus_gamble = false
+	_focus_gacha = false
 	interact_prompt = ""
 	var carried := Session.items_held_by(peer_id)
 	var best_distance := Rules.INTERACT_RANGE
@@ -326,7 +345,9 @@ func _update_focus() -> void:
 	var lines := PackedStringArray()
 	var held := Session.item_held_by(peer_id)
 	if held != null:
-		if held.is_tool():
+		if held.kind == Tools.CAMCORDER:
+			lines.append(_camcorder_prompt(held))
+		elif held.is_tool():
 			lines.append("%s: %s" % [Settings.prompt_for("use_item"), _use_verb(held)])
 		var drop_line := "%s: drop %s" % [Settings.prompt_for("drop"), held.describe()]
 		if carried.size() >= 2:
@@ -342,7 +363,8 @@ func _update_focus() -> void:
 	if position.distance_to(Rules.CONSOLE_POS) < Rules.INTERACT_RANGE:
 		_focus_console = true
 		if Session.phase == Session.Phase.ORBIT:
-			interact_prompt = "%s: pull the lever and land on %s" % [Settings.prompt_for("interact"), MapThemes.get_theme(Session.next_map).name]
+			var site_name: String = Rules.SITE_INFO.get(Session.next_site, Rules.SITE_INFO.medium).name
+			interact_prompt = "%s: pull the lever and land on %s (%s)" % [Settings.prompt_for("interact"), MapThemes.get_theme(Session.next_map).name, site_name.to_lower()]
 		else:
 			interact_prompt = "%s: launch the ship and end the round" % Settings.prompt_for("interact")
 	elif position.distance_to(Rules.TERMINAL_POS) < Rules.INTERACT_RANGE:
@@ -350,6 +372,8 @@ func _update_focus() -> void:
 		interact_prompt = "%s: use the terminal to buy gear" % Settings.prompt_for("interact")
 	elif _focus_item == null and position.distance_to(Rules.GAMBLE_POS) < Rules.INTERACT_RANGE:
 		interact_prompt = _gamble_prompt(held)
+	elif _focus_item == null and position.distance_to(Rules.GACHA_POS) < Rules.INTERACT_RANGE:
+		interact_prompt = _gacha_prompt()
 
 
 ## What Scrap Slots offers, depending on what you're holding.
@@ -366,10 +390,48 @@ func _gamble_prompt(held: Scrap) -> String:
 	return "%s: gamble %s. Lose it, or win up to x6" % [Settings.prompt_for("interact"), held.describe()]
 
 
+func _camcorder_prompt(item: Scrap) -> String:
+	if camcorder.viewing:
+		return "%s: next    %s: previous    %s: stop watching" % [
+			Settings.prompt_for("use_item"), Settings.prompt_for("phone_record"), Settings.prompt_for("playback")]
+	if camcorder.is_recording:
+		return "%s: stop recording" % Settings.prompt_for("phone_record")
+	return "%s: photo    %s: record a clip    %s: watch (%d saved)" % [
+		Settings.prompt_for("use_item"), Settings.prompt_for("phone_record"), Settings.prompt_for("playback"), item.recordings]
+
+
+## What the capsule gacha offers.
+func _gacha_prompt() -> String:
+	if Session.gacha_busy() or (Session.level != null and Session.level.gacha_station.is_spinning()):
+		return "The capsule is rolling..."
+	if Session.credits < Rules.GACHA_PRICE:
+		return "Capsule gacha: $%d a pull. The crew has $%d" % [Rules.GACHA_PRICE, Session.credits]
+	_focus_gacha = true
+	return "%s: pull the gacha for $%d. Jackpot: $%d!" % [Settings.prompt_for("interact"), Rules.GACHA_PRICE, Rules.GACHA_JACKPOT]
+
+
+func _holding(kind: String) -> bool:
+	var held := Session.item_held_by(peer_id)
+	return held != null and held.kind == kind
+
+
+## Hops on or off the scooter in your hands.
+func toggle_ride() -> void:
+	if not net_riding and not _holding(Tools.SCOOTER):
+		return
+	net_riding = not net_riding
+	Sfx.play_2d("scooter" if net_riding else "switch", -8.0)
+
+
 func _use_verb(item: Scrap) -> String:
 	match item.kind:
 		Tools.SHOVEL: return "swing the shovel"
 		Tools.STUN_GRENADE: return "throw the stun grenade"
+		Tools.FLASHBANG: return "throw the flashbang"
+		Tools.ADRENALINE: return "inject the adrenaline"
+		Tools.SCOOTER: return "step off the scooter" if net_riding else "ride the scooter"
+		Tools.BEACON: return "beam back to the ship" if Session.phase == Session.Phase.PLAYING else "beam back (only works on the ground)"
+		Tools.SHOTGUN: return "fire (%d shells)" % item.charges if item.charges > 0 else "fire (empty until orbit)"
 	return "zap (%d left)" % item.charges if item.charges > 0 else "zap (empty until orbit)"
 
 
@@ -405,6 +467,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			Session.terminal_requested.emit()
 		elif _focus_gamble:
 			Session.request_gamble.rpc_id(1)
+		elif _focus_gacha:
+			Session.request_gacha.rpc_id(1)
 		elif _focus_item != null:
 			Session.request_pickup.rpc_id(1, _focus_item.item_id)
 	elif event.is_action_pressed("drop"):
@@ -415,15 +479,33 @@ func _unhandled_input(event: InputEvent) -> void:
 		if phone.is_up:
 			phone.put_away()
 		else:
+			camcorder.stop_clip()
+			camcorder.close_viewer()
 			phone.raise()
 	elif event.is_action_pressed("use_item"):
 		# One button: a photo while the phone is up, otherwise whatever gear you hold.
+		var held := Session.item_held_by(peer_id)
 		if phone.is_up:
 			phone.take_photo()
-		elif Session.item_held_by(peer_id) != null and Session.item_held_by(peer_id).is_tool():
+		elif camcorder.viewing:
+			camcorder.show_next(1)
+		elif camcorder.held() != null:
+			camcorder.take_photo()
+		elif held != null and held.kind == Tools.SCOOTER:
+			toggle_ride()
+		elif held != null and held.is_tool():
 			Session.request_use_item.rpc_id(1)
-	elif event.is_action_pressed("phone_record") and phone.is_up:
-		phone.start_recording()
+	elif event.is_action_pressed("phone_record"):
+		if phone.is_up:
+			phone.start_recording()
+		elif camcorder.viewing:
+			camcorder.show_next(-1)
+		elif camcorder.is_recording:
+			camcorder.stop_clip()
+		else:
+			camcorder.start_clip()
+	elif event.is_action_pressed("playback") and not phone.is_up:
+		camcorder.toggle_viewer()
 	elif event.is_action_pressed("flashlight"):
 		net_flashlight = not net_flashlight
 		_flashlight.visible = net_flashlight

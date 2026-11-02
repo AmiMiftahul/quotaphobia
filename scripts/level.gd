@@ -9,6 +9,7 @@ const WALL_THICKNESS := 1.4 # The wall models stick out 0.7 m on each side.
 const DOOR_WIDTH := 2.8 # The clear opening of the gate model.
 const DOOR_HEIGHT := 3.6
 const GATE_WIDTH := 4.2
+const PILLAR_WIDTH := 1.1
 
 const SHIP_TINT := Color(1.0, 1.0, 1.0)
 const CEILING_SHADE := Color(0.7, 0.7, 0.7)
@@ -22,6 +23,7 @@ var _flicker_time := 0.0
 var _theme: Dictionary
 var environment: Environment
 var gamble_station: GambleStation
+var gacha_station: GachaStation
 var _ambience_timer := AMBIENCE_MIN_SECONDS
 var _ambience_cells: Array[Vector2i] = []
 
@@ -60,6 +62,12 @@ func build(layout: FacilityLayout) -> void:
 
 	for cell in layout.light_cells:
 		_add_light(FacilityLayout.cell_center(cell) + Vector3(0, WALL_HEIGHT - 0.4, 0), _theme.light_color, _theme.light_energy, 8.0, _theme.flicker > 0.0 or _theme.pulse)
+	for index in layout.halls.size():
+		# One big lamp over the middle of each hall, so its size can be seen.
+		var span := maxi(layout.halls[index].size.x, layout.halls[index].size.y)
+		_add_light(layout.hall_center(index) + Vector3(0, WALL_HEIGHT - 0.3, 0), _theme.light_color, _theme.light_energy * 1.4, 6.0 + 5.0 * span, _theme.flicker > 0.0 or _theme.pulse)
+	for pos: Vector3 in layout.pillars:
+		_add_pillar(pos)
 	_add_ship_fittings()
 	_flush_batches()
 
@@ -105,6 +113,10 @@ func _add_ship_fittings() -> void:
 	_add_prop(Assets.FACTORY % "machine", Rules.GAMBLE_POS, PI * 0.5, 1.0)
 	gamble_station = GambleStation.new()
 	add_child(gamble_station)
+	# The capsule gacha, across the door from it.
+	_add_prop(Assets.FACTORY % "hopper-high-round", Rules.GACHA_POS + Vector3(0.25, 0, 0), -PI * 0.5, 0.9)
+	gacha_station = GachaStation.new()
+	add_child(gacha_station)
 	add_child(Sfx.make_ship_hum(ship_center + Vector3(0, 2, 0)))
 
 
@@ -184,6 +196,8 @@ func _add_floor_and_ceiling(cell: Vector2i, tint: Color, ceiling_tint: Color) ->
 
 func _add_wall(layout: FacilityLayout, cell: Vector2i, dir: Vector2i) -> void:
 	var other: Vector2i = cell + dir
+	if layout != null and layout.is_merged(cell, other):
+		return # Two rooms of the same hall: no wall at all.
 	var size := FacilityLayout.CELL
 	var line := FacilityLayout.cell_center(cell) + Vector3(dir.x, 0, dir.y) * size * 0.5
 	var along_x := dir.x == 0
@@ -225,6 +239,20 @@ func _add_wall_face(line: Vector3, axis: Vector3, facing: Vector3, has_door: boo
 		var stretched := turn * Basis.from_scale(Vector3(1.25, 1.0, 1.0))
 		for sign_value: float in [-1.0, 1.0]:
 			_place(Assets.SPACE % "template-wall", Transform3D(stretched, line + axis * 2.5 * sign_value), tint)
+
+
+## A square column where four rooms of a hall meet. Hunters' routes run through room
+## centres and doors, well clear of it, but players can hide behind it.
+func _add_pillar(pos: Vector3) -> void:
+	var size := Vector3(PILLAR_WIDTH, WALL_HEIGHT, PILLAR_WIDTH)
+	_solid(pos + Vector3(0, WALL_HEIGHT * 0.5, 0), size)
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh.material = _material(_theme.wall_tint.darkened(0.45))
+	var pillar := MeshInstance3D.new()
+	pillar.mesh = mesh
+	pillar.position = pos + Vector3(0, WALL_HEIGHT * 0.5, 0)
+	add_child(pillar)
 
 
 func _tint_for(cell: Vector2i) -> Color:
