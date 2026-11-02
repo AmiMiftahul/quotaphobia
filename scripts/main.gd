@@ -10,6 +10,7 @@ var _results: PanelContainer
 var _name_edit: LineEdit
 var _address_edit: LineEdit
 var _menu_status: Label
+var _play_button: Button
 var _board_label: Label
 var _lobby_list: Label
 var _start_button: Button
@@ -116,6 +117,13 @@ func _on_host_pressed() -> void:
 		return
 	_menu_status.text = ""
 	_refresh()
+
+
+## One click: host a private game and start the first round straight away.
+func _on_play_now_pressed() -> void:
+	_on_host_pressed()
+	if Net.is_online():
+		Session.start_run()
 
 
 func _on_join_pressed() -> void:
@@ -276,7 +284,8 @@ func _build_menu() -> void:
 	_name_edit.text = "Player"
 	_name_edit.max_length = 16
 	box.add_child(_name_edit)
-	_button(box, "Host a game", _on_host_pressed)
+	_play_button = _button(box, "Play now", _on_play_now_pressed)
+	_button(box, "Host a game with friends", _on_host_pressed)
 	_label(box, "Host's address (leave empty for this computer)")
 	_address_edit = LineEdit.new()
 	_address_edit.placeholder_text = "127.0.0.1"

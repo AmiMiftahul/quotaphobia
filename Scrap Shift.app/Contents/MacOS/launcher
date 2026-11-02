@@ -1,0 +1,18 @@
+#!/bin/bash
+# Double-click starter for the game. It finds the project next to this app, so
+# the folder can be moved anywhere.
+PROJECT="$(cd "$(dirname "$0")/../../.." && pwd)"
+GODOT="$PROJECT/tools/Godot.app/Contents/MacOS/Godot"
+
+if [ ! -x "$GODOT" ]; then
+  osascript -e 'display dialog "Scrap Shift needs Godot 4.7.2 in the tools folder. See the README for how to install it." with title "Scrap Shift" buttons {"OK"} default button "OK" with icon stop'
+  exit 1
+fi
+
+# The first start on a computer has to prepare the art and sound, which takes a moment.
+if [ ! -d "$PROJECT/.godot/imported" ]; then
+  osascript -e 'display notification "Getting the game ready for its first start..." with title "Scrap Shift"'
+  "$GODOT" --headless --path "$PROJECT" --import > /dev/null 2>&1
+fi
+
+exec "$GODOT" --path "$PROJECT"

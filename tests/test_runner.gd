@@ -236,6 +236,15 @@ func _wake(entity: Entity, pos: Vector3) -> void:
 	entity.enabled = true
 
 
+## Two side-by-side rooms with a solid wall between them, or nothing if there are none.
+func _find_wall() -> Array[Vector2i]:
+	for cell in Session.layout.all_cells():
+		var beside: Vector2i = cell + Vector2i(1, 0)
+		if Session.layout.has_cell(beside) and not Session.layout.is_open(cell, beside):
+			return [cell, beside]
+	return []
+
+
 func _hp() -> int:
 	return Session.player_states[Net.my_id()].hp
 
@@ -275,16 +284,17 @@ func _entities() -> void:
 	check("the Watcher hurts you if you never look back", await until(func() -> bool: return _hp() < hp_before, 4.0))
 
 	# Walls block sight: facing it through a wall doesn't count as watching.
-	await _fresh_round("cryo")
-	watcher = Session.entity_of_kind("watcher") as Watcher
 	var near_room := Vector2i(-1, -1)
 	var far_room := Vector2i(-1, -1)
-	for cell in Session.layout.all_cells():
-		var beside: Vector2i = cell + Vector2i(1, 0)
-		if Session.layout.has_cell(beside) and not Session.layout.is_open(cell, beside):
-			near_room = cell
-			far_room = beside
+	# A map with many doors may have no suitable wall, so build another until one does.
+	for attempt in 20:
+		await _fresh_round("cryo")
+		var wall := _find_wall()
+		if not wall.is_empty():
+			near_room = wall[0]
+			far_room = wall[1]
 			break
+	watcher = Session.entity_of_kind("watcher") as Watcher
 	check("found a solid wall to test with", near_room.x >= 0)
 	me().teleport(FacilityLayout.cell_center(near_room) + Vector3(2.5, 0.1, 0))
 	me().rotation.y = -PI * 0.5
@@ -406,19 +416,20 @@ func _entities() -> void:
 	check("a stun wears off", await until(func() -> bool: return not stalker.net_stunned, 4.0))
 
 	# The Sentinel's stun can't reach through walls.
-	await _fresh_round("foundry")
+	var wall_room := Vector2i(-1, -1)
+	var wall_beside := Vector2i(-1, -1)
+	for attempt in 20:
+		await _fresh_round("foundry")
+		var wall := _find_wall()
+		if not wall.is_empty():
+			wall_room = wall[0]
+			wall_beside = wall[1]
+			break
+	check("found a solid wall for the Sentinel", wall_room.x >= 0)
 	sentinel = Session.entity_of_kind("sentinel") as Sentinel
 	stalker = Session.entity_of_kind("stalker") as Monster
 	stalker.enabled = false
-	_wake(sentinel, FacilityLayout.cell_center(near_room) + Vector3(2.5, 0, 0))
-	var wall_room := Vector2i(-1, -1)
-	var wall_beside := Vector2i(-1, -1)
-	for cell in Session.layout.all_cells():
-		var beside: Vector2i = cell + Vector2i(1, 0)
-		if Session.layout.has_cell(beside) and not Session.layout.is_open(cell, beside):
-			wall_room = cell
-			wall_beside = beside
-			break
+	_wake(sentinel, FacilityLayout.cell_center(wall_room) + Vector3(2.5, 0, 0))
 	sentinel.position = FacilityLayout.cell_center(wall_room) + Vector3(2.5, 0, 0)
 	stalker.position = FacilityLayout.cell_center(wall_beside) + Vector3(-2.5, 0, 0)
 	await wait(0.4)
@@ -734,6 +745,15 @@ func _ui() -> void:
 	Net.leave()
 	await wait(0.2)
 	check("leaving returns to the menu", main._menu.visible)
+
+	# One click from the menu into a round.
+	Session.forced_maps = ["cryo"]
+	main._play_button.pressed.emit()
+	check("Play now goes straight into a round", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and me() != null, 3.0))
+	check("Play now shows the game, not a menu", main._hud.visible and not main._menu.visible and not main._lobby.visible)
+	Net.leave()
+	await wait(0.2)
+	check("leaving Play now returns to the menu", main._menu.visible)
 
 
 # --- Measures how loud each sound is, one at a time, at master volume 100% ------

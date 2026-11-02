@@ -15,14 +15,14 @@ scrap back to the ship, avoid the monster, meet the quota, and survive as long a
 
 ## Play it now
 
-Run this from the project folder:
+Double-click **Scrap Shift** in this folder, then press **Play now**.
+
+To play with friends, one person chooses **Host a game with friends** and the others choose
+**Join a game**. For several windows on one Mac, run this command once per extra window:
 
 ```bash
 tools/Godot.app/Contents/MacOS/Godot --path .
 ```
-
-To play with several windows on one Mac, run that command again in another terminal.
-In one window choose **Host a game**; in the others choose **Join a game**.
 
 To play with someone on your home network, type the host's local IP address into the
 join box. Over the internet this version needs the host to forward UDP port 24567. Step 6
