@@ -70,6 +70,71 @@ func fetch_leaderboard(limit: int = 10) -> Array:
 	return rows
 
 
+func fetch_products() -> Array:
+	if not is_configured():
+		return []
+	var path := "/rest/v1/products?select=id,name,price_idr&order=id"
+	var result := await _send(path, HTTPClient.METHOD_GET, _headers(), "")
+	return result.data if result.ok and result.data is Array else []
+
+
+## The product ids this player owns, according to the server.
+func fetch_entitlements() -> Array:
+	var owned: Array = []
+	if not is_configured() or not await _ensure_signed_in():
+		return owned
+	var result := await _send("/rest/v1/entitlements?select=product_id", HTTPClient.METHOD_GET, _signed_in_headers(), "")
+	if result.ok and result.data is Array:
+		for row: Dictionary in result.data:
+			owned.append(row.product_id)
+	return owned
+
+
+func create_qris_order(product_id: String) -> Dictionary:
+	if not is_configured() or not await _ensure_signed_in():
+		return {"ok": false, "error": "Can't reach the shop right now."}
+	var body := JSON.stringify({"product_id": product_id})
+	var result := await _send("/functions/v1/create-qris-order", HTTPClient.METHOD_POST, _signed_in_headers(), body)
+	if result.ok and result.data is Dictionary and result.data.has("qr_url"):
+		return {"ok": true, "data": result.data}
+	var message := "Can't reach the shop right now. You have not been charged."
+	if result.data is Dictionary and result.data.has("error"):
+		message = result.data.error
+	return {"ok": false, "error": message}
+
+
+## The order's status on the server, or "" if it can't be read right now.
+func fetch_order_status(order_id: String) -> String:
+	if not await _ensure_signed_in():
+		return ""
+	var path := "/rest/v1/orders?select=status&order_id=eq.%s" % order_id.uri_encode()
+	var result := await _send(path, HTTPClient.METHOD_GET, _signed_in_headers(), "")
+	if result.ok and result.data is Array and not result.data.is_empty():
+		return result.data[0].status
+	return ""
+
+
+func download(url: String) -> PackedByteArray:
+	var request := HTTPRequest.new()
+	request.timeout = TIMEOUT_SECONDS
+	add_child(request)
+	if request.request(url) != OK:
+		request.queue_free()
+		return PackedByteArray()
+	var response: Array = await request.request_completed
+	request.queue_free()
+	if response[0] != HTTPRequest.RESULT_SUCCESS or response[1] != 200:
+		push_warning("Download failed (result %d, HTTP %d)." % [response[0], response[1]])
+		return PackedByteArray()
+	return response[3]
+
+
+func _signed_in_headers() -> PackedStringArray:
+	var headers := _headers()
+	headers.append("Authorization: Bearer " + _access_token)
+	return headers
+
+
 ## Anonymous accounts give each install its own identity with no sign-up screen.
 func _ensure_signed_in() -> bool:
 	var now := Time.get_unix_time_from_system()

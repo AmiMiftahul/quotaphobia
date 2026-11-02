@@ -24,6 +24,8 @@ func _ready() -> void:
 		"extra": await _extra()
 		"ui": await _ui()
 		"levels": await _levels()
+		"store": await _store()
+		"store_steam": await _store_steam()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
 	get_tree().quit(1 if fails > 0 else 0)
@@ -163,13 +165,15 @@ func _unit() -> void:
 
 func _shot(file_name: String) -> void:
 	await wait(0.4)
-	await RenderingServer.frame_post_draw
 	var folder := ""
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("shots="):
 			folder = arg.trim_prefix("shots=")
-	if not folder.is_empty():
-		get_viewport().get_texture().get_image().save_png(folder.path_join(file_name + ".png"))
+	# With no window, nothing is ever drawn, so there's nothing to wait for.
+	if folder.is_empty() or DisplayServer.get_name() == "headless":
+		return
+	await RenderingServer.frame_post_draw
+	get_viewport().get_texture().get_image().save_png(folder.path_join(file_name + ".png"))
 
 
 func _press(keycode: Key) -> void:
@@ -308,13 +312,13 @@ func _ui() -> void:
 	me().rotation.y = PI
 	me().teleport(Vector3(0, 0.1, -8.0))
 	me().bot_move = Vector2(0, -1)
-	await wait(2.0)
+	var walked_out: bool = await until(func() -> bool: return me().position.z > -3.0, 6.0)
 	me().bot_move = Vector2.ZERO
-	check("a player can walk out through the door", me().position.z > -3.0 and not Rules.in_ship(me().position))
+	check("a player can walk out through the door (at %s)" % me().position, walked_out)
 	me().bot_move = Vector2(0, 1)
-	await wait(2.0)
+	var walked_back: bool = await until(func() -> bool: return Rules.in_ship(me().position), 6.0)
 	me().bot_move = Vector2.ZERO
-	check("a player can walk back into the ship", Rules.in_ship(me().position))
+	check("a player can walk back into the ship (at %s)" % me().position, walked_back)
 
 	# The monster patrols between rooms on its own, and stays out of the ship.
 	me().teleport(Vector3(0, 0.1, -9.0))
@@ -428,6 +432,108 @@ func _levels() -> void:
 		print("LEVEL %s at %.0f dB, %.0f m: %.1f dB" % [use[0], use[1], use[2], await _peak_over(1.0)])
 
 
+# --- The shop, through the real menu, against a fake payment server -----------
+
+func _mock_payment(status: String, order_id: String) -> void:
+	var url := ""
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("cloud_url="):
+			url = arg.trim_prefix("cloud_url=")
+	var request := HTTPRequest.new()
+	add_child(request)
+	request.request("%s/mock/payment/%s/%s" % [url, status, order_id], [], HTTPClient.METHOD_POST)
+	await request.request_completed
+	request.queue_free()
+
+
+func _store() -> void:
+	Store.poll_seconds = 0.2
+	var main: Control = load("res://scenes/main.tscn").instantiate()
+	add_child(main)
+	await wait(0.2)
+	check("the shop button shows outside Steam", main._shop_button.visible)
+	check("prices are written the Indonesian way", Store.format_price(1500000) == "Rp 1.500.000" and Store.format_price(15000) == "Rp 15.000" and Store.format_price(500) == "Rp 500")
+
+	main._shop_button.pressed.emit()
+	check("the shop lists the products", await until(func() -> bool: return Store.products.size() == 3 and main._shop_list.get_child_count() == 3))
+	check("the shop replaces the menu", main._shop.visible and not main._menu.visible)
+	check("nothing is owned to begin with", Store.owned.is_empty())
+
+	# Equipping something you haven't paid for does nothing.
+	Store.equip("skin_medic")
+	check("unpaid items can't be used", Store.equipped == "")
+
+	# Buying: pressing the real Buy button.
+	var buy_button := main._shop_list.get_child(0).get_child(1) as Button
+	check("each item has a buy button", buy_button.text == "Buy with QRIS")
+	buy_button.pressed.emit()
+	check("a QR code appears", await until(func() -> bool: return Store.qr_texture != null and main._qr_frame.visible))
+	check("the QR screen shows the price", main._qr_panel.visible and main._qr_label.text.contains("Rp 15.000"))
+	var first_order: String = Store.order.order_id
+	Store.buy("skin_pilot")
+	check("a second order can't start during the first", Store.order.order_id == first_order)
+	await wait(0.6)
+	check("nothing unlocks while the payment is pending", Store.order.status == "pending" and Store.owned.is_empty())
+	await _shot("10_qr")
+
+	# The server says paid.
+	await _mock_payment("paid", first_order)
+	check("a paid order is noticed automatically", await until(func() -> bool: return Store.order.get("status", "") == "paid"))
+	check("the QR code goes away after paying", not main._qr_frame.visible)
+	check("the item becomes owned", await until(func() -> bool: return Store.owned.has("skin_engineer")))
+	main._qr_panel.find_children("*", "Button", true, false)[0].pressed.emit()
+	await wait(0.2)
+	check("closing returns to the shop", main._shop.visible and not main._qr_panel.visible)
+
+	# Using what you bought, and it being remembered.
+	var use_button := main._shop_list.get_child(0).get_child(1) as Button
+	check("an owned item offers Use", use_button.text == "Use")
+	use_button.pressed.emit()
+	check("using it equips it", Store.equipped == "skin_engineer")
+	await get_tree().process_frame
+	check("the standard look can be chosen again", (main._shop_list.get_child(0) as Button).text.contains("standard"))
+	await _shot("11_shop")
+
+	# Buying what you already own is refused by the server, with a clear message.
+	Store.close_order()
+	Store.buy("skin_engineer")
+	check("buying twice is refused", await until(func() -> bool: return Store.order.get("status", "") == "error"))
+	check("the refusal explains why", Store.order.message == "You already own this.")
+	Store.close_order()
+
+	# A QR code that expires unlocks nothing.
+	Store.buy("skin_medic")
+	await until(func() -> bool: return Store.order.get("status", "") == "pending")
+	await _mock_payment("expired", Store.order.order_id)
+	check("an expired QR code is reported", await until(func() -> bool: return Store.order.get("status", "") == "expired"))
+	check("an expired QR code unlocks nothing", not Store.owned.has("skin_medic"))
+	Store.close_order()
+
+	# Losing what you owned (a refund) un-equips it.
+	Store.buy("skin_pilot")
+	await until(func() -> bool: return Store.order.get("status", "") == "pending")
+	check("each item uses the server's price", Store.order.amount_idr == 25000)
+	Store.close_order()
+	Store.equipped = "skin_pilot"
+	await Store.refresh()
+	check("a look you don't own is removed", Store.equipped == "")
+	main._on_shop_closed()
+	check("back returns to the menu", main._menu.visible and not main._shop.visible)
+	Store.equip("")
+
+
+func _store_steam() -> void:
+	var main: Control = load("res://scenes/main.tscn").instantiate()
+	add_child(main)
+	await wait(0.2)
+	check("a Steam build is recognised", Store.is_steam_build())
+	check("a Steam build hides the QRIS shop", not main._shop_button.visible)
+	check("a Steam build refuses QRIS payments", not Store.payments_allowed())
+	Store.buy("skin_engineer")
+	await wait(1.0)
+	check("a Steam build never starts a Midtrans order", Store.order.is_empty())
+
+
 # --- A fifth player must be turned away with a clear reason -------------------
 
 func _extra() -> void:
@@ -440,6 +546,11 @@ func _extra() -> void:
 
 func _scenario() -> void:
 	# LOBBY
+	# Bot1 wears a bought look; Bot2 tries a look that doesn't exist.
+	if idx == 1:
+		Store.equipped = "skin_medic"
+	elif idx == 2:
+		Store.equipped = "hacked_skin"
 	if role == "host":
 		check("host can open a game", Net.host("Host", port) == OK)
 		Session.results_seconds = 2.0
@@ -470,6 +581,8 @@ func _scenario() -> void:
 	var scrap_total := Session.layout.scrap_spawns.size()
 	check("all scrap appears", await until(func() -> bool: return Session.scrap_root.get_child_count() == scrap_total))
 	check("the monster appears", await until(func() -> bool: return Session.monster_root.get_child_count() == 1))
+	check("everyone sees a player's bought look", Session.player_node(peer_named("Bot1")).model_name == Store.SKIN_MODELS.skin_medic)
+	check("made-up looks fall back to the standard crew", Session.player_node(peer_named("Bot2")).model_name in Player.MODELS)
 	print("FACILITY_R1 %d" % Session.layout.fingerprint())
 	var first_fingerprint := Session.layout.fingerprint()
 	await barrier("round1", 4)

@@ -17,7 +17,9 @@ TIMEOUT = 240
 SCENE = "res://tests/test_main.tscn"
 # Harmless: a position update still in flight reaches a machine just after that
 # player was removed at round end or on disconnect, and the engine ignores it.
-IGNORED = re.compile(r"Ignoring sync data from non-authority or for missing node")
+# Also expected: the shop test deliberately tries to buy something it already owns.
+IGNORED = re.compile(r"Ignoring sync data from non-authority or for missing node"
+                     r"|create-qris-order failed \(result 0, HTTP 409\)")
 
 
 def launch(logs, name, *args, env=None):
@@ -35,6 +37,17 @@ def main():
     # Models and sounds must be imported before any test can load them.
     subprocess.run([str(GODOT), "--headless", "--path", str(ROOT), "--import"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+    # The payment rules, in the same code the server runs.
+    node = subprocess.run(["node", "--test", "tests/payments.test.ts"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    node_passed = int((re.search(r"pass (\d+)", node.stdout) or [0, 0])[1])
+    if node.returncode != 0 or node_passed == 0:
+        failures.append("payment rule tests failed:\n" + node.stdout[-2000:])
+    # The game must never contain anything that can move money or read other players' data.
+    for path in list((ROOT / "scripts").rglob("*.gd")) + [ROOT / "project.godot"]:
+        text = path.read_text()
+        for forbidden in ("MIDTRANS_SERVER_KEY", "SB-Mid-server", "Mid-server-", "api.midtrans.com", "api.sandbox.midtrans.com", "SERVICE_ROLE"):
+            if forbidden in text:
+                failures.append(f"{path.name} contains {forbidden}: it belongs on the server only")
     with tempfile.TemporaryDirectory() as logs:
         unit = launch(logs, "unit", "role=unit")
         unit.wait(timeout=60)
@@ -48,6 +61,13 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"])):
+                procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
+                try:
+                    procs[f"{role}0"].wait(timeout=90)
+                except subprocess.TimeoutExpired:
+                    procs[f"{role}0"].kill()
+                    failures.append(f"{role}: timed out")
             procs["host0"] = launch(logs, "host0", "role=host", "idx=0", login("host0"), *common)
             time.sleep(1.0)
             for i in (1, 2, 3):
@@ -71,7 +91,7 @@ def main():
             mock_log.close()
 
         names = ["unit", *procs]
-        passed = 0
+        passed = node_passed
         for name in names:
             text = read(logs, name)
             passed += len(re.findall(r"^PASS ", text, re.M))

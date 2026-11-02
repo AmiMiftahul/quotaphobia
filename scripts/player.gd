@@ -25,6 +25,7 @@ var interact_prompt := ""
 var input_enabled := true
 var bot_move := Vector2.ZERO # Lets the automated tests walk through the real movement code.
 var current_animation := ""
+var model_name := ""
 
 var _pitch := 0.0
 var _camera: Camera3D
@@ -39,8 +40,9 @@ var _focus_console := false
 var _spectate_index := 0
 
 
-func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3) -> void:
+func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3, skin: String = "") -> void:
 	peer_id = peer
+	model_name = Store.SKIN_MODELS.get(skin, MODELS[index % MODELS.size()])
 	display_name = player_name
 	color_index = index
 	position = spawn_pos
@@ -55,7 +57,7 @@ func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3) -> vo
 	collision.shape = shape
 	collision.position.y = 0.9
 	add_child(collision)
-	_body = Assets.instance(Assets.CHARACTERS % MODELS[index % MODELS.size()])
+	_body = Assets.instance(Assets.CHARACTERS % model_name)
 	_body.scale = Vector3.ONE * MODEL_SCALE
 	_body.rotation.y = PI # The models face +Z; the game treats -Z as forward.
 	add_child(_body)

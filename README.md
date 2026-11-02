@@ -44,6 +44,8 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/player.gd`, `monster.gd`, `scrap.gd` | The things in the world. |
 | `scripts/main.gd` | Menus and HUD. |
 | `scripts/autoload/sfx.gd` | Every sound, and how loud it plays. |
+| `scripts/autoload/store.gd` | The in-game shop. |
+| `supabase/functions/`, `cloud/store_schema.sql` | The payment server and its tables. |
 | `scripts/assets.gd`, `assets/` | Loading the models and sounds. |
 | `scripts/autoload/cloud.gd`, `cloud/schema.sql` | The online database. |
 
@@ -91,6 +93,61 @@ To measure how loud each sound is after changing it:
 ```bash
 tools/Godot.app/Contents/MacOS/Godot --path . res://tests/test_main.tscn -- role=levels
 ```
+
+### Selling items with QRIS (non-Steam versions only)
+
+[Steam requires in-game purchases to use the Steam Wallet](https://partner.steamgames.com/doc/features/microtransactions),
+so QRIS must stay out of the Steam version. A build exported with the `steam` feature tag
+hides the shop and refuses Midtrans orders. Selling on Steam needs Steam's own microtransaction
+system, which isn't built yet.
+
+How a purchase flows: the game asks `create-qris-order` for an item > the server looks up the
+price and asks Midtrans for a QR code > the player pays > Midtrans notifies `midtrans-webhook`
+> the server checks the signature, re-confirms with Midtrans, and unlocks the item > the game,
+checking every 3 seconds, sees it. The game never decides that something is paid for.
+
+**Test mode setup:**
+
+1. Connect the cloud database first (step 3), then paste `cloud/store_schema.sql` into the
+   Supabase SQL Editor and press Run. Product names and prices live in the `products` table.
+2. Create a Midtrans account and switch its dashboard to **Sandbox**.
+3. Install the [Supabase command line tool](https://supabase.com/docs/guides/cli), then run
+   these yourself, typing your sandbox server key where shown. Never put this key in the game.
+
+   ```bash
+   supabase login
+   ```
+
+   ```bash
+   supabase link --project-ref YOUR_PROJECT_REF
+   ```
+
+   ```bash
+   supabase secrets set MIDTRANS_SERVER_KEY=YOUR_SANDBOX_SERVER_KEY
+   ```
+
+   ```bash
+   supabase functions deploy create-qris-order
+   ```
+
+   ```bash
+   supabase functions deploy midtrans-webhook --no-verify-jwt
+   ```
+
+4. In Midtrans, set the Payment Notification URL to
+   `https://YOUR_PROJECT_REF.supabase.co/functions/v1/midtrans-webhook`.
+5. Buy something in the game and complete it with Midtrans's sandbox payment simulator.
+
+**Before taking real money, all of these must be done:**
+
+- Pass every case in test mode: paid, expired, refunded, and paying two open QR codes.
+- Add real account login. Purchases belong to an anonymous account stored on one computer, so
+  today a player who reinstalls or changes computers loses what they bought.
+- Add terms, a refund policy and a support contact, and check your tax duties.
+- Confirm Midtrans approves your business for selling digital game items.
+- Watch the function logs for `REFUND NEEDED` and `AMOUNT MISMATCH`. Refunds are done by hand.
+
+Only then set your production key and `MIDTRANS_IS_PRODUCTION=true` with `supabase secrets set`.
 
 ### 5. Playtest with friends
 

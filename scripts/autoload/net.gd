@@ -10,6 +10,7 @@ signal peer_left(peer: int)
 const DEFAULT_PORT := 24567
 
 var players := {} # peer id -> display name
+var skins := {} # peer id -> equipped product id
 var local_name := "Player"
 var rejected_count := 0
 
@@ -40,6 +41,7 @@ func host(player_name: String, port: int = DEFAULT_PORT) -> Error:
 	multiplayer.multiplayer_peer = peer
 	local_name = _clean_name(player_name)
 	players = {1: local_name}
+	skins = {1: _clean_skin(Store.equipped)}
 	players_changed.emit()
 	return OK
 
@@ -64,8 +66,12 @@ func _clean_name(raw: String) -> String:
 	return cleaned if not cleaned.is_empty() else "Player"
 
 
+func _clean_skin(skin: String) -> String:
+	return skin if Store.SKIN_MODELS.has(skin) else ""
+
+
 func _on_connected_to_server() -> void:
-	_rpc_register.rpc_id(1, local_name)
+	_rpc_register.rpc_id(1, local_name, Store.equipped)
 	connected.emit()
 
 
@@ -80,19 +86,21 @@ func _on_server_disconnected() -> void:
 func _end_connection(reason: String) -> void:
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	players = {}
+	skins = {}
 	players_changed.emit()
 	connection_ended.emit(reason)
 
 
 func _on_peer_disconnected(peer: int) -> void:
 	if multiplayer.is_server() and players.erase(peer):
-		_rpc_players.rpc(players)
+		skins.erase(peer)
+		_rpc_players.rpc(players, skins)
 		peer_left.emit(peer)
 		players_changed.emit()
 
 
 @rpc("any_peer", "reliable")
-func _rpc_register(player_name: String) -> void:
+func _rpc_register(player_name: String, skin: String) -> void:
 	if not multiplayer.is_server():
 		return
 	var peer := multiplayer.get_remote_sender_id()
@@ -107,7 +115,8 @@ func _rpc_register(player_name: String) -> void:
 		get_tree().create_timer(0.3).timeout.connect(_kick.bind(peer))
 		return
 	players[peer] = _clean_name(player_name)
-	_rpc_players.rpc(players)
+	skins[peer] = _clean_skin(skin)
+	_rpc_players.rpc(players, skins)
 	players_changed.emit()
 
 
@@ -122,6 +131,7 @@ func _rpc_rejected(reason: String) -> void:
 
 
 @rpc("authority", "reliable")
-func _rpc_players(new_players: Dictionary) -> void:
+func _rpc_players(new_players: Dictionary, new_skins: Dictionary) -> void:
 	players = new_players
+	skins = new_skins
 	players_changed.emit()

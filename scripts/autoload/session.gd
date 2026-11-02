@@ -85,7 +85,7 @@ func _setup_input() -> void:
 
 func _spawn_player(data: Dictionary) -> Node:
 	var player := Player.new()
-	player.setup(data.peer, data.name, data.index, data.pos)
+	player.setup(data.peer, data.name, data.index, data.pos, data.get("skin", ""))
 	player.set_multiplayer_authority(data.peer, true)
 	return player
 
@@ -147,7 +147,7 @@ func _begin_round(number: int) -> void:
 	peers.sort()
 	for index in peers.size():
 		var spawn_pos := FacilityLayout.cell_center(FacilityLayout.SHIP_CELL) + Vector3(-1.5 + index, 0.1, 1.0)
-		_player_spawner.spawn({"peer": peers[index], "name": Net.players[peers[index]], "index": index, "pos": spawn_pos})
+		_player_spawner.spawn({"peer": peers[index], "name": Net.players[peers[index]], "index": index, "pos": spawn_pos, "skin": Net.skins.get(peers[index], "")})
 	for index in layout.scrap_spawns.size():
 		var data: Dictionary = layout.scrap_spawns[index].duplicate()
 		data["id"] = index + 1

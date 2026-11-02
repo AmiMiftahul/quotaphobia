@@ -20,6 +20,15 @@ var _health_bar: ProgressBar
 var _stamina_bar: ProgressBar
 var _results_label: Label
 var _volume_sliders: Array[HSlider] = []
+var _shop: PanelContainer
+var _shop_button: Button
+var _shop_list: VBoxContainer
+var _shop_status: Label
+var _qr_panel: PanelContainer
+var _qr_frame: PanelContainer
+var _qr_image: TextureRect
+var _qr_label: Label
+var _shop_open := false
 
 
 func _ready() -> void:
@@ -31,6 +40,9 @@ func _ready() -> void:
 	_build_hud()
 	_build_pause()
 	_build_results()
+	_build_shop()
+	Store.changed.connect(_refresh_shop)
+	Store.order_changed.connect(_refresh_order)
 	Net.players_changed.connect(_refresh)
 	Net.connected.connect(_on_connected)
 	Net.connection_ended.connect(_on_connection_ended)
@@ -66,7 +78,10 @@ func _unhandled_input(event: InputEvent) -> void:
 func _refresh() -> void:
 	var online := Net.is_online()
 	var phase := Session.phase
-	_menu.visible = not online
+	_menu.visible = not online and not _shop_open
+	_shop.visible = not online and _shop_open and not Store.order.has("status")
+	_qr_panel.visible = not online and _shop_open and Store.order.has("status")
+	_shop_button.visible = Store.payments_allowed()
 	_lobby.visible = online and phase == Session.Phase.LOBBY
 	_hud.visible = online and phase == Session.Phase.PLAYING
 	_results.visible = online and (phase == Session.Phase.RESULTS or phase == Session.Phase.GAME_OVER)
@@ -135,6 +150,53 @@ func _on_leaderboard(rows: Array) -> void:
 		lines.append("%d. %s  $%d  (%d rounds, crew of %d)" % [
 			index + 1, row.display_name, row.total_scrap, row.rounds_cleared, row.crew_size])
 	_board_label.text = "\n".join(lines)
+
+
+# --- Shop ---------------------------------------------------------------------
+
+func _on_shop_pressed() -> void:
+	_shop_open = true
+	_shop_status.text = "Loading..."
+	_refresh()
+	await Store.refresh()
+	_shop_status.text = "" if not Store.products.is_empty() else "The shop isn't available right now."
+
+
+func _on_shop_closed() -> void:
+	_shop_open = false
+	_refresh()
+
+
+func _refresh_shop() -> void:
+	for child in _shop_list.get_children():
+		_shop_list.remove_child(child)
+		child.queue_free()
+	if not Store.equipped.is_empty():
+		_button(_shop_list, "Use the standard crew look", Store.equip.bind(""))
+	for product: Dictionary in Store.products:
+		var product_id: String = product.id
+		if not Store.SKIN_MODELS.has(product_id):
+			continue
+		var row := HBoxContainer.new()
+		_shop_list.add_child(row)
+		var name_label := _label(row, "%s  %s" % [product.name, Store.format_price(int(product.price_idr))])
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if Store.equipped == product_id:
+			_label(row, "In use").autowrap_mode = TextServer.AUTOWRAP_OFF
+		elif Store.owned.has(product_id):
+			_button(row, "Use", Store.equip.bind(product_id))
+		else:
+			_button(row, "Buy with QRIS", Store.buy.bind(product_id))
+
+
+func _refresh_order() -> void:
+	_qr_image.texture = Store.qr_texture
+	_qr_frame.visible = Store.qr_texture != null and Store.order.get("status", "") == "pending"
+	var amount := ""
+	if Store.order.has("amount_idr"):
+		amount = Store.format_price(Store.order.amount_idr) + "\n"
+	_qr_label.text = amount + Store.order.get("message", "")
+	_refresh()
 
 
 # --- UI construction --------------------------------------------------------
@@ -213,6 +275,7 @@ func _build_menu() -> void:
 	_address_edit.placeholder_text = "127.0.0.1"
 	box.add_child(_address_edit)
 	_button(box, "Join a game", _on_join_pressed)
+	_shop_button = _button(box, "Shop", _on_shop_pressed)
 	_volume_slider(box)
 	_button(box, "Quit", get_tree().quit)
 	_menu_status = _label(box, "")
@@ -278,6 +341,38 @@ func _build_pause() -> void:
 		_pause.visible = false
 		_update_mouse())
 	_button(box, "Leave game", Net.leave)
+
+
+func _build_shop() -> void:
+	var parts := _panel()
+	_shop = parts[0]
+	var box: VBoxContainer = parts[1]
+	_label(box, "Shop", 28)
+	_label(box, "New looks for your crew member. They don't affect gameplay.")
+	_shop_list = VBoxContainer.new()
+	box.add_child(_shop_list)
+	_shop_status = _label(box, "")
+	_button(box, "Back", _on_shop_closed)
+	var qr_parts := _panel()
+	_qr_panel = qr_parts[0]
+	var qr_box: VBoxContainer = qr_parts[1]
+	_label(qr_box, "Pay with QRIS", 24)
+	_qr_image = TextureRect.new()
+	_qr_image.custom_minimum_size = Vector2(300, 300)
+	_qr_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_qr_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_qr_image.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	# Phone cameras need a white margin around a QR code to be able to scan it.
+	_qr_frame = PanelContainer.new()
+	var white := StyleBoxFlat.new()
+	white.bg_color = Color.WHITE
+	white.set_content_margin_all(24)
+	_qr_frame.add_theme_stylebox_override("panel", white)
+	_qr_frame.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_qr_frame.add_child(_qr_image)
+	qr_box.add_child(_qr_frame)
+	_qr_label = _label(qr_box, "")
+	_button(qr_box, "Close", Store.close_order)
 
 
 func _build_results() -> void:

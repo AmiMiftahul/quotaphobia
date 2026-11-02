@@ -13,6 +13,7 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 Net="*res://scripts/autoload/net.gd"
 Cloud="*res://scripts/autoload/cloud.gd"
 Sfx="*res://scripts/autoload/sfx.gd"
+Store="*res://scripts/autoload/store.gd"
 Session="*res://scripts/autoload/session.gd"
 
 [display]
