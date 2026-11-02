@@ -36,9 +36,7 @@ func build(layout: FacilityLayout) -> void:
 	var middle := Vector3(extent * 0.5 - half, 0.0, extent * 0.5 - half)
 	_solid(middle + Vector3(0, -0.25, 0), Vector3(extent, 0.5, extent))
 	_solid(middle + Vector3(0, WALL_HEIGHT + 0.25, 0), Vector3(extent, 0.5, extent))
-	var ship_center := FacilityLayout.cell_center(FacilityLayout.SHIP_CELL)
-	_solid(ship_center + Vector3(0, -0.25, 0), Vector3(10, 0.5, 10))
-	_solid(ship_center + Vector3(0, WALL_HEIGHT + 0.25, 0), Vector3(10, 0.5, 10))
+	_add_ship_shell()
 
 	var cells := layout.all_cells()
 	cells.append(FacilityLayout.SHIP_CELL)
@@ -61,14 +59,91 @@ func build(layout: FacilityLayout) -> void:
 
 	for cell in layout.light_cells:
 		_add_light(FacilityLayout.cell_center(cell) + Vector3(0, WALL_HEIGHT - 0.4, 0), _theme.light_color, _theme.light_energy, 8.0, _theme.flicker > 0.0 or _theme.pulse)
-	_add_light(ship_center + Vector3(0, WALL_HEIGHT - 0.4, 0), Color(0.85, 0.95, 1.0), 1.5, 12.0, false)
+	_add_ship_fittings()
+	_flush_batches()
 
+
+## The ship alone, sealed, in orbit above the next place it will land.
+func build_orbit(next_theme: Dictionary) -> void:
+	_theme = MapThemes.ORBIT
+	_body = StaticBody3D.new()
+	add_child(_body)
+	_add_environment()
+	_add_ship_shell()
+	var ship := FacilityLayout.SHIP_CELL
+	_add_floor_and_ceiling(ship, SHIP_TINT, SHIP_TINT * CEILING_SHADE)
+	for dir in FacilityLayout.DIRS:
+		_add_wall(null, ship, dir)
+	_add_window(next_theme.light_color)
+	_add_ship_fittings()
+	_flush_batches()
+
+
+func _add_ship_shell() -> void:
+	var ship_center := FacilityLayout.cell_center(FacilityLayout.SHIP_CELL)
+	_solid(ship_center + Vector3(0, -0.25, 0), Vector3(10, 0.5, 10))
+	_solid(ship_center + Vector3(0, WALL_HEIGHT + 0.25, 0), Vector3(10, 0.5, 10))
+
+
+## The console, the terminal and the gear rack, the same on every map.
+func _add_ship_fittings() -> void:
+	var ship_center := FacilityLayout.cell_center(FacilityLayout.SHIP_CELL)
+	_add_light(ship_center + Vector3(0, WALL_HEIGHT - 0.4, 0), Color(0.85, 0.95, 1.0), 1.5, 12.0, false)
 	# The launch console, with warning lights on each side.
 	_add_prop(Assets.FACTORY % "machine-window", Rules.CONSOLE_POS, 0.0, 1.2)
 	for side: float in [-2.2, 2.2]:
 		_add_prop(Assets.FACTORY % "warning-orange", Rules.CONSOLE_POS + Vector3(side, 0, -0.3), 0.0, 1.5)
+	# The terminal against the right-hand wall, its screen facing into the ship.
+	_add_prop(Assets.FACTORY % "screen-small", Rules.TERMINAL_POS + Vector3(0.35, 0, 0), -PI * 0.5, 1.6)
+	_add_light(Rules.TERMINAL_POS + Vector3(-0.6, 1.4, 0), Color(0.4, 1.0, 0.6), 0.6, 3.0, false)
+	# Signs high on the side walls, facing into the ship, so they never block your view.
+	var wall_x := FacilityLayout.CELL * 0.5 - WALL_THICKNESS * 0.5 - 0.02
+	_add_sign("TERMINAL", Vector3(wall_x, 2.7, Rules.TERMINAL_POS.z), -PI * 0.5, Color(0.5, 1.0, 0.65))
+	_add_sign("GEAR RACK", Vector3(-wall_x, 2.7, Rules.RACK_POS.z + 1.2), PI * 0.5, Color(0.5, 0.85, 1.0))
 	add_child(Sfx.make_ship_hum(ship_center + Vector3(0, 2, 0)))
-	_flush_batches()
+
+
+func _add_sign(text: String, pos: Vector3, facing: float, color: Color) -> void:
+	var sign_label := Label3D.new()
+	sign_label.text = text
+	sign_label.modulate = color
+	sign_label.pixel_size = 0.006
+	sign_label.font_size = 48
+	sign_label.outline_size = 8
+	sign_label.position = pos
+	sign_label.rotation.y = facing
+	add_child(sign_label)
+
+
+## Stars, and the curve of the planet below, tinted like the facility's lights.
+func _add_window(planet_color: Color) -> void:
+	var shader := Shader.new()
+	shader.code = """
+shader_type spatial;
+render_mode unshaded;
+uniform vec3 planet_color;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+void fragment() {
+	vec2 cell = floor(UV * vec2(90.0, 45.0));
+	vec3 color = vec3(0.01, 0.012, 0.03) + vec3(step(0.985, hash(cell)) * hash(cell + 7.0));
+	float planet = smoothstep(1.02, 1.0, distance(UV * vec2(2.0, 1.0), vec2(1.0, 1.9)));
+	color = mix(color, planet_color * (0.25 + 0.5 * UV.y), planet);
+	ALBEDO = color;
+}
+"""
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	material.set_shader_parameter("planet_color", Vector3(planet_color.r, planet_color.g, planet_color.b))
+	var quad := QuadMesh.new()
+	quad.size = Vector2(4.4, 2.2)
+	quad.material = material
+	var window := MeshInstance3D.new()
+	window.mesh = quad
+	# On the inside of the wall where the door opens when the ship has landed.
+	var line_z := FacilityLayout.cell_center(FacilityLayout.SHIP_CELL).z + FacilityLayout.CELL * 0.5
+	window.position = Vector3(0, 2.0, line_z - WALL_THICKNESS * 0.5 - 0.02)
+	window.rotation.y = PI
+	add_child(window)
 
 
 func _process(delta: float) -> void:
@@ -85,7 +160,7 @@ func _process(delta: float) -> void:
 				level = 0.2
 		_flicker_lights[index].light_energy = _theme.light_energy * level
 	_ambience_timer -= delta
-	if _ambience_timer <= 0.0:
+	if _ambience_timer <= 0.0 and not _ambience_cells.is_empty():
 		_ambience_timer = randf_range(AMBIENCE_MIN_SECONDS, AMBIENCE_MAX_SECONDS)
 		var room := _ambience_cells[randi() % _ambience_cells.size()]
 		Sfx.play_3d(_theme.ambience, FacilityLayout.cell_center(room) + Vector3(0, 2, 0), -6.0, 45.0)
@@ -108,7 +183,7 @@ func _add_wall(layout: FacilityLayout, cell: Vector2i, dir: Vector2i) -> void:
 	var line := FacilityLayout.cell_center(cell) + Vector3(dir.x, 0, dir.y) * size * 0.5
 	var along_x := dir.x == 0
 	var axis := Vector3.RIGHT if along_x else Vector3.BACK
-	var has_door := layout.is_open(cell, other)
+	var has_door := layout != null and layout.is_open(cell, other)
 
 	# What you bump into.
 	if has_door:
@@ -124,7 +199,7 @@ func _add_wall(layout: FacilityLayout, cell: Vector2i, dir: Vector2i) -> void:
 	# What you see: a wall face on each side that has a room, facing into it.
 	var into_cell := Vector3(-dir.x, 0, -dir.y)
 	_add_wall_face(line, axis, into_cell, has_door, _tint_for(cell))
-	if layout.has_cell(other) or other == FacilityLayout.SHIP_CELL:
+	if (layout != null and layout.has_cell(other)) or other == FacilityLayout.SHIP_CELL:
 		_add_wall_face(line, axis, -into_cell, has_door, _tint_for(other))
 	if has_door:
 		var ship_door: bool = cell == FacilityLayout.SHIP_CELL or other == FacilityLayout.SHIP_CELL

@@ -20,6 +20,11 @@ const MONSTER_ATTACK_RANGE := 1.4
 const MONSTER_ATTACK_COOLDOWN := 1.5
 
 const CONSOLE_POS := Vector3(0.0, 0.0, -13.5)
+const TERMINAL_POS := Vector3(3.7, 0.0, -11.5) # Where the crew buys gear.
+const RACK_POS := Vector3(-3.7, 0.0, -12.6) # Where bought gear appears.
+
+const STARTING_CREDITS := 60 # Every banked dollar of scrap also becomes a credit to spend.
+const TOOL_LIMIT := 12 # Gear the crew can own at once.
 
 
 ## Scrap value the crew must bank within a level's days. More players means a higher target.

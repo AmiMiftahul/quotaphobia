@@ -64,6 +64,19 @@ func leave() -> void:
 	_end_connection("")
 
 
+## This computer's addresses on the home or office network, for friends to type in.
+func local_addresses() -> PackedStringArray:
+	var found := PackedStringArray()
+	for address in IP.get_local_addresses():
+		var parts := address.split(".")
+		if parts.size() != 4:
+			continue
+		var second := int(parts[1])
+		if address.begins_with("192.168.") or address.begins_with("10.") or (parts[0] == "172" and second >= 16 and second <= 31):
+			found.append(address)
+	return found
+
+
 func _clean_name(raw: String) -> String:
 	var cleaned := raw.strip_edges().left(16)
 	return cleaned if not cleaned.is_empty() else "Player"
@@ -108,8 +121,8 @@ func _rpc_register(player_name: String, skin: String) -> void:
 		return
 	var peer := multiplayer.get_remote_sender_id()
 	var reason := ""
-	if Session.phase != Session.Phase.LOBBY:
-		reason = "That game has already started."
+	if Session.phase != Session.Phase.LOBBY and Session.phase != Session.Phase.ORBIT:
+		reason = "The crew is out on a job. Try again when their ship is back in orbit."
 	elif players.size() >= Rules.MAX_PLAYERS:
 		reason = "That game is full."
 	if not reason.is_empty():
@@ -121,6 +134,8 @@ func _rpc_register(player_name: String, skin: String) -> void:
 	skins[peer] = _clean_skin(skin)
 	_rpc_players.rpc(players, skins)
 	players_changed.emit()
+	# Joining a ship in orbit puts you straight on board.
+	Session.on_player_joined(peer)
 
 
 func _kick(peer: int) -> void:

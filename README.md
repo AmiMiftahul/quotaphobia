@@ -1,7 +1,8 @@
 # Quotaphobia
 
-A 1-4 player co-op game made with Godot 4.7. Land at an abandoned facility, carry
-scrap back to the ship, avoid what hunts you, and reach each level's goal within 4 days.
+A 1-4 player co-op game made with Godot 4.7. Gear up in your ship, land at an abandoned
+facility, carry scrap back, fight off or escape what hunts you, and reach each level's goal
+within 4 days.
 
 ## Controls
 
@@ -9,16 +10,20 @@ scrap back to the ship, avoid what hunts you, and reach each level's goal within
 |---|---|
 | WASD / mouse | Move and look |
 | Shift / Space | Sprint / jump (when dead, Space switches which crewmate you watch) |
-| E / G | Pick up or use the console / drop |
+| E / G | Pick up, or use the console and terminal / drop |
+| Left click | Use the gear in your hands (or take a photo with the phone up) |
 | F | Flashlight |
 | Esc | Menu |
 
 ## Play it now
 
-Double-click **Quotaphobia** in this folder, then press **Play now**.
+Double-click **Quotaphobia** in this folder, then press **Play**. You start in your ship, in
+orbit. Buy gear at the terminal if you like, then walk to the console and press **E** to land.
 
-To play with friends, one person chooses **Host a game with friends** and the others choose
-**Join a game**. For several windows on one Mac, run this command once per extra window:
+The ship in orbit is the lobby. Friends can join any time it's in orbit: before the first
+landing, and between days. They choose **Join a game** and type the address shown in the
+top-right corner of your screen. Nobody can join while the crew is down on a map.
+For several windows on one Mac, run this command once per extra window:
 
 ```bash
 tools/Godot.app/Contents/MacOS/Godot --path .
@@ -43,7 +48,8 @@ is remembered. Settings live in `scripts/autoload/settings.gd` and the screen in
 | Gameplay | Creature hints, crosshair |
 
 Controller defaults: left stick moves, right stick looks, A jumps, X picks up or uses, B drops,
-Y is the flashlight, RT sprints, Start pauses. In menus, LB and RB switch tabs and B goes back.
+Y is the flashlight, RT sprints, RB uses your gear, Start pauses. In menus, LB and RB switch
+tabs and B goes back.
 
 ## Levels, days and the backpack
 
@@ -57,9 +63,28 @@ one in your hands, and **Q** switches which one that is (D-pad left on a control
 bottom of the screen shows what you carry. A heavier load slows you down, though you can always
 move at 40% speed or better. If you die, everything you carry falls to the floor.
 
+## Gear, credits and the terminal
+
+Every dollar of scrap the crew banks also becomes a **credit**. The crew shares one pot of
+credits and starts each run with $60. Spend them at the **terminal** in the ship (walk up and
+press **E**). What you buy appears on the **gear rack**. Gear takes a carry slot like scrap,
+but it's worth nothing when sold.
+
+| Gear | Price | What it does |
+|---|---|---|
+| Shovel | $30 | Left click to swing. Each hit stuns a hunter for 2 seconds. Enough hits finish it off: 4 for a Stalker, 3 for a Watcher or Listener, 1 for a Mimic. It also bonks crewmates (20 damage). |
+| Stun grenade | $25 | Left click to throw it about 7 m. After 1.5 seconds it stuns every hunter within 9 m that can see it, for 6 seconds. Players who look at it get a white screen. One use. |
+| Zap gun | $70 | Aim and left click to freeze the hunter you're pointing at for 5 seconds, up to 15 m away. 3 charges, refilled every time you're back in orbit. A miss costs nothing. |
+
+Gear that's on the ship's floor, or in the hands of someone who makes it back, when the ship
+leaves is kept for the next day. Gear left outside is lost. A new run starts with $60 and no
+gear. Toxic vents can't be fought, and friendly helpers are never hit. Prices and numbers are
+in `scripts/tools.gd`.
+
 ## The phone
 
-Press **P** to raise your phone. **Left click** takes a photo with the flash, and **R** records
+Press **P** to raise your phone. **Left click** (the same button that uses gear) takes a photo
+with the flash, and **R** records
 5 seconds of video with no sound. Press **P** again to put it away. On a controller, use
 D-pad up, RB and LB. All of these can be rebound in Settings.
 
@@ -110,6 +135,7 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/facility_layout.gd` | Generates the map from a seed, so the host only sends one number. |
 | `scripts/level.gd` | Turns that map into walls and lights. |
 | `scripts/player.gd`, `scrap.gd` | Players and items. |
+| `scripts/tools.gd` | The gear sold at the terminal: prices, what each piece does, and how it looks. |
 | `scripts/monster.gd`, `scripts/entities/` | Every creature and helper. |
 | `scripts/map_themes.gd` | Every map's look, sound, rules and residents. |
 | `scripts/main.gd` | Menus and HUD. |
@@ -119,10 +145,12 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/assets.gd`, `assets/` | Loading the models and sounds. |
 | `scripts/autoload/cloud.gd`, `cloud/schema.sql` | The online database. |
 
-**2. One round.** The host picks a seed > every machine builds the same facility > the host
-creates players, scrap and the monster > players bank scrap in the ship > the round ends when
-someone launches, time runs out, or everyone dies > quota met: next, harder round. Quota
-missed: each player saves the run to the database and the crew returns to the lobby.
+**2. One day.** The crew waits in orbit, where friends can join and gear is bought > someone
+pulls the lever > the host picks a seed > every machine builds the same facility > the host
+creates scrap and creatures > players bank scrap in the ship > the day ends when someone
+launches, time runs out, or everyone dies > the ship returns to orbit with the gear it kept.
+When a level's last day ends short of the goal, each player saves the run to the database and
+a fresh run starts in orbit.
 
 ## Testing
 
@@ -133,8 +161,9 @@ python3 tests/run_tests.py
 ```
 
 That runs rule checks plus a real session: four separate copies of the game on real network
-connections, and a fifth player who must be refused. It covers cheating attempts, deaths,
-disconnects, and a fake database.
+connections, a fifth player who must be refused, and a friend who joins late while the ship is
+in orbit. It covers cheating attempts, deaths, disconnects, buying and using gear, and a fake
+database.
 
 ```bash
 tools/Godot.app/Contents/MacOS/Godot --path . res://tests/test_main.tscn -- role=ui

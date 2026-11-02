@@ -15,6 +15,7 @@ const FLASH_SECONDS := 0.15
 const MODELS := ["character-male-a", "character-female-c", "character-male-d", "character-female-e"]
 const MODEL_SCALE := 2.4
 const STEP_DISTANCE := 2.2
+const ATTACK_SHOW_SECONDS := 0.45
 
 var peer_id := 0
 var display_name := ""
@@ -64,7 +65,9 @@ var _last_position := Vector3.ZERO
 var _step_progress := 0.0
 var _focus_item: Scrap
 var _focus_console := false
+var _focus_terminal := false
 var _spectate_index := 0
+var _attack_show := 0.0
 
 
 func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3, skin: String = "") -> void:
@@ -208,7 +211,7 @@ func teleport(pos: Vector3) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if Session.phase != Session.Phase.PLAYING:
+	if not Session.in_world():
 		return
 	if not is_local():
 		position = position.lerp(net_pos, minf(1.0, delta * 15.0))
@@ -241,7 +244,11 @@ func _animate_and_step(delta: float) -> void:
 		_play_animation("die")
 		return
 	var speed := moved.length() / maxf(delta, 0.001)
-	_play_animation("sprint" if speed > 5.0 else ("walk" if speed > 0.3 else "idle"))
+	if _attack_show > 0.0:
+		_attack_show -= delta
+		_play_animation("attack-melee-right")
+	else:
+		_play_animation("sprint" if speed > 5.0 else ("walk" if speed > 0.3 else "idle"))
 	_step_progress += moved.length()
 	if _step_progress >= STEP_DISTANCE:
 		_step_progress = 0.0
@@ -249,6 +256,11 @@ func _animate_and_step(delta: float) -> void:
 			Sfx.play_2d("step", -14.0)
 		else:
 			Sfx.play_3d("step", position, -8.0, 20.0)
+
+
+## Everyone else sees you swing when you use your gear.
+func show_attack() -> void:
+	_attack_show = ATTACK_SHOW_SECONDS
 
 
 func _play_animation(animation_name: String) -> void:
@@ -281,7 +293,7 @@ func _move(delta: float) -> void:
 	if can_act:
 		move += Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var sprinting := can_act and Input.is_action_pressed("sprint") and stamina > 0.0 and move != Vector2.ZERO
-	var regen: float = STAMINA_REGEN * Session.layout.theme.stamina_regen
+	var regen: float = STAMINA_REGEN * (Session.layout.theme.stamina_regen if Session.layout != null else 1.0)
 	stamina = clampf(stamina + (-STAMINA_DRAIN if sprinting else regen) * delta, 0.0, 1.0)
 	var speed := (SPRINT_SPEED if sprinting else WALK_SPEED) * (1.0 - Session.carried_weight(peer_id))
 	var direction := (transform.basis * Vector3(move.x, 0.0, move.y)).normalized()
@@ -299,19 +311,22 @@ func _move(delta: float) -> void:
 func _update_focus() -> void:
 	_focus_item = null
 	_focus_console = false
+	_focus_terminal = false
 	interact_prompt = ""
 	var carried := Session.items_held_by(peer_id)
 	var best_distance := Rules.INTERACT_RANGE
 	for item: Scrap in Session.scrap_root.get_children():
 		var distance := position.distance_to(item.position)
 		var offset := (item.position - position).normalized()
-		if item.holder_id == 0 and distance < best_distance and forward().dot(offset) > 0.4:
+		if item.holder_id == 0 and not item.armed and distance < best_distance and forward().dot(offset) > 0.4:
 			best_distance = distance
 			_focus_item = item
 	var lines := PackedStringArray()
 	var held := Session.item_held_by(peer_id)
 	if held != null:
-		var drop_line := "%s: drop %s ($%d)" % [Settings.prompt_for("drop"), held.kind, held.value]
+		if held.is_tool():
+			lines.append("%s: %s" % [Settings.prompt_for("use_item"), _use_verb(held)])
+		var drop_line := "%s: drop %s" % [Settings.prompt_for("drop"), held.describe()]
 		if carried.size() >= 2:
 			drop_line += "    %s: switch item" % Settings.prompt_for("cycle_item")
 		lines.append(drop_line)
@@ -320,11 +335,24 @@ func _update_focus() -> void:
 			lines.append("Your hands and backpack are full")
 			_focus_item = null
 		else:
-			lines.append("%s: pick up %s ($%d)" % [Settings.prompt_for("interact"), _focus_item.kind, _focus_item.value])
+			lines.append("%s: pick up %s" % [Settings.prompt_for("interact"), _focus_item.describe()])
 	interact_prompt = "\n".join(lines)
 	if position.distance_to(Rules.CONSOLE_POS) < Rules.INTERACT_RANGE:
 		_focus_console = true
-		interact_prompt = "%s: launch the ship and end the round" % Settings.prompt_for("interact")
+		if Session.phase == Session.Phase.ORBIT:
+			interact_prompt = "%s: pull the lever and land on %s" % [Settings.prompt_for("interact"), MapThemes.get_theme(Session.next_map).name]
+		else:
+			interact_prompt = "%s: launch the ship and end the round" % Settings.prompt_for("interact")
+	elif position.distance_to(Rules.TERMINAL_POS) < Rules.INTERACT_RANGE:
+		_focus_terminal = true
+		interact_prompt = "%s: use the terminal to buy gear" % Settings.prompt_for("interact")
+
+
+func _use_verb(item: Scrap) -> String:
+	match item.kind:
+		Tools.SHOVEL: return "swing the shovel"
+		Tools.STUN_GRENADE: return "throw the stun grenade"
+	return "zap (%d left)" % item.charges if item.charges > 0 else "zap (empty until orbit)"
 
 
 func _follow_teammate() -> void:
@@ -340,7 +368,7 @@ func _follow_teammate() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not is_local() or Session.phase != Session.Phase.PLAYING:
+	if not is_local() or not Session.in_world():
 		return
 	if not is_alive():
 		if event.is_action_pressed("jump"):
@@ -355,6 +383,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("interact"):
 		if _focus_console:
 			Session.request_launch.rpc_id(1)
+		elif _focus_terminal:
+			Session.terminal_requested.emit()
 		elif _focus_item != null:
 			Session.request_pickup.rpc_id(1, _focus_item.item_id)
 	elif event.is_action_pressed("drop"):
@@ -366,8 +396,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			phone.put_away()
 		else:
 			phone.raise()
-	elif event.is_action_pressed("phone_photo") and phone.is_up:
-		phone.take_photo()
+	elif event.is_action_pressed("use_item"):
+		# One button: a photo while the phone is up, otherwise whatever gear you hold.
+		if phone.is_up:
+			phone.take_photo()
+		elif Session.item_held_by(peer_id) != null and Session.item_held_by(peer_id).is_tool():
+			Session.request_use_item.rpc_id(1)
 	elif event.is_action_pressed("phone_record") and phone.is_up:
 		phone.start_recording()
 	elif event.is_action_pressed("flashlight"):

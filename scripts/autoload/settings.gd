@@ -63,34 +63,34 @@ const REBINDABLE := [
 	["move_right", "Move right"],
 	["sprint", "Sprint"],
 	["jump", "Jump"],
-	["interact", "Pick up / use"],
+	["interact", "Pick up / interact"],
 	["drop", "Drop"],
 	["cycle_item", "Switch item"],
 	["flashlight", "Flashlight"],
 	["phone", "Phone"],
-	["phone_photo", "Take a photo"],
+	["use_item", "Use item / take photo"],
 	["phone_record", "Record 5 seconds"],
 ]
 # On a controller, moving is always the left stick and looking the right stick.
 const PAD_REBINDABLE := [
 	["sprint", "Sprint"],
 	["jump", "Jump"],
-	["interact", "Pick up / use"],
+	["interact", "Pick up / interact"],
 	["drop", "Drop"],
 	["cycle_item", "Switch item"],
 	["flashlight", "Flashlight"],
 	["phone", "Phone"],
-	["phone_photo", "Take a photo"],
+	["use_item", "Use item / take photo"],
 	["phone_record", "Record 5 seconds"],
 ]
 const DEFAULT_KEYS := {
 	"move_forward": "key:87", "move_back": "key:83", "move_left": "key:65", "move_right": "key:68",
 	"sprint": "key:4194325", "jump": "key:32", "interact": "key:69", "drop": "key:71", "flashlight": "key:70",
-	"phone": "key:80", "phone_photo": "mouse:1", "phone_record": "key:82", "cycle_item": "key:81",
+	"phone": "key:80", "use_item": "mouse:1", "phone_record": "key:82", "cycle_item": "key:81",
 }
 const DEFAULT_PAD := {
 	"sprint": "axis:5", "jump": "joy:0", "interact": "joy:2", "drop": "joy:1", "flashlight": "joy:3",
-	"phone": "joy:11", "phone_photo": "joy:10", "phone_record": "joy:9", "cycle_item": "joy:13",
+	"phone": "joy:11", "use_item": "joy:10", "phone_record": "joy:9", "cycle_item": "joy:13",
 }
 const STICK_ACTIONS := {
 	"move_forward": [JOY_AXIS_LEFT_Y, -1.0], "move_back": [JOY_AXIS_LEFT_Y, 1.0],
@@ -209,13 +209,18 @@ func load_from_file() -> void:
 		if file.has_section_key("settings", setting):
 			values[setting] = _checked(setting, file.get_value("settings", setting))
 	for action: String in DEFAULT_KEYS:
-		var binding: Variant = file.get_value("keyboard", action, "")
+		var binding: Variant = file.get_value("keyboard", action, file.get_value("keyboard", _old_name(action), ""))
 		if binding is String and _is_valid_binding(binding, "keyboard"):
 			keys[action] = binding
 	for action: String in DEFAULT_PAD:
-		var binding: Variant = file.get_value("controller", action, "")
+		var binding: Variant = file.get_value("controller", action, file.get_value("controller", _old_name(action), ""))
 		if binding is String and _is_valid_binding(binding, "controller"):
 			pad[action] = binding
+
+
+## Early versions had a photo button; it became the button that uses gear, too.
+func _old_name(action: String) -> String:
+	return "phone_photo" if action == "use_item" else action
 
 
 func _process(delta: float) -> void:

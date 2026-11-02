@@ -109,6 +109,25 @@ const MAPS := {
 }
 
 
+# The ship between jobs: calm, bright and safe. It isn't a map, so it's not in ORDER.
+const ORBIT := {
+	"name": "In orbit",
+	"wall_tint": Color(1.0, 1.0, 1.0),
+	"ceiling_tint": Color(0.7, 0.7, 0.7),
+	"light_color": Color(0.85, 0.95, 1.0),
+	"light_energy": 1.5,
+	"flicker": 0.0,
+	"pulse": false,
+	"ambient_color": Color(0.6, 0.7, 0.9),
+	"ambient_energy": 0.35,
+	"fog_color": Color(0.0, 0.0, 0.0),
+	"fog_density": 0.0,
+	"stamina_regen": 1.0,
+	"hum_pitch": 1.0,
+	"ambience": "",
+}
+
+
 static func get_theme(map_id: String) -> Dictionary:
 	return MAPS[map_id]
 

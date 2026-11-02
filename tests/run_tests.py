@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runs everything: rule checks, then a real 4-player session (plus a rejected
-fifth player) as separate game processes. Prints every problem it finds."""
+fifth player, and a friend who joins late while the ship is in orbit) as separate
+game processes. Prints every problem it finds."""
 import os
 import re
 import shutil
@@ -62,7 +63,7 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)
@@ -77,6 +78,11 @@ def main():
             while "LOBBY_FULL" not in read(logs, "host0") and time.time() < deadline:
                 time.sleep(0.2)
             procs["extra0"] = launch(logs, "extra0", "role=extra", login("extra0"), *common)
+            # A friend who joins late, once the ship is back in orbit after the run.
+            deadline = time.time() + TIMEOUT
+            while "ORBIT_OPEN" not in read(logs, "host0") and time.time() < deadline and procs["host0"].poll() is None:
+                time.sleep(0.2)
+            procs["late0"] = launch(logs, "late0", "role=late", login("late0"), *common)
             end = time.time() + TIMEOUT
             for name, proc in procs.items():
                 try:
@@ -113,7 +119,7 @@ def main():
                 if re.match(r"(SCRIPT )?ERROR|WARNING", line) and not IGNORED.search(line):
                     failures.append(f"{name}: {line}")
 
-        for tag in ("FACILITY_R1", "FACILITY_R2"):
+        for tag in ("FACILITY_R1", "FACILITY_R2", "FACILITY_R3"):
             seen = set()
             for name in procs:
                 seen.update(re.findall(rf"^{tag} (-?\d+)", read(logs, name), re.M))
@@ -124,12 +130,12 @@ def main():
                 print(f"PASS all machines built the same facility ({tag})")
 
         inserts = (Path(logs) / "mock.log").read_text().count("MOCK_INSERT")
-        # One from each of the 3 players left in the session, and one from the days test's finished run.
-        if inserts == 4:
+        # One from each of the 3 players left in the session, and one each from the days and gear tests' finished runs.
+        if inserts == 5:
             passed += 1
             print("PASS the database received one record for each finished run")
         else:
-            failures.append(f"expected 4 database inserts, got {inserts}")
+            failures.append(f"expected 5 database inserts, got {inserts}")
 
         print(f"\n{passed} checks passed, {len(failures)} problems")
         for line in dict.fromkeys(failures):

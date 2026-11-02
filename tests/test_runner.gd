@@ -1,6 +1,7 @@
 extends Node
 ## Plays the real game over real network connections, driven by tests/run_tests.py.
-## Roles: unit, host (idx 0), client (idx 1-3), extra (a fifth player who must be refused).
+## Roles: unit, host (idx 0), client (idx 1-3), extra (a fifth player who must be refused),
+## late (a friend who joins once the ship is in orbit), and one per feature below.
 
 var role := "unit"
 var idx := 0
@@ -9,6 +10,8 @@ var fails := 0
 var _arrived := {}
 var _released := {}
 var _ended_reason := ""
+var _shop_reply := ""
+var _effects: Array[String] = []
 
 
 func _ready() -> void:
@@ -19,6 +22,8 @@ func _ready() -> void:
 			"idx": idx = int(parts[1])
 			"port": port = int(parts[1])
 	Net.connection_ended.connect(func(reason: String) -> void: _ended_reason = reason)
+	Session.shop_replied.connect(func(_ok: bool, message: String) -> void: _shop_reply = message)
+	Session.effect_played.connect(func(kind: String, _pos: Vector3) -> void: _effects.append(kind))
 	match role:
 		"unit": await _unit()
 		"extra": await _extra()
@@ -32,6 +37,8 @@ func _ready() -> void:
 		"carry": await _carry()
 		"perf": await _perf()
 		"days": await _days()
+		"gear": await _gear()
+		"late": await _late()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
 	get_tree().quit(1 if fails > 0 else 0)
@@ -96,6 +103,13 @@ func peer_named(player_name: String) -> int:
 
 func item(id: int) -> Scrap:
 	return Session.scrap_root.get_node_or_null("Scrap%d" % id) as Scrap
+
+
+func gear(kind: String) -> Scrap:
+	for scrap: Scrap in Session.scrap_root.get_children():
+		if scrap.kind == kind:
+			return scrap
+	return null
 
 
 func free_items_outside_ship() -> Array[Scrap]:
@@ -552,22 +566,74 @@ func _ui() -> void:
 	check("the menu shows at launch", main._menu.visible and not main._lobby.visible)
 
 	main._name_edit.text = "  A very long player name indeed  "
-	main._on_host_pressed()
-	await wait(0.2)
-	check("hosting opens the lobby", main._lobby.visible and not main._menu.visible)
-	check("long names are trimmed", Net.players[1].length() <= 16 and not Net.players[1].begins_with(" "))
-	check("the host sees the start button", main._start_button.visible)
-	await _shot("2_lobby")
-
 	Session.entities_enabled = false
 	Session.forced_maps = ["foundry"]
 	Session.days_per_level = 1
 	Session.results_seconds = 3.0
-	main._start_button.pressed.emit()
-	check("start button begins the round", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING))
-	check("the player appears", await until(func() -> bool: return me() != null))
-	check("HUD replaces the menus", main._hud.visible and not main._lobby.visible)
+	main._play_button.pressed.emit()
+	check("Play puts the crew in the ship, in orbit", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 3.0))
+	await wait(0.3)
+	check("long names are trimmed", Net.players[1].length() <= 16 and not Net.players[1].begins_with(" "))
+	check("the ship is the lobby: the game shows, not a menu", main._hud.visible and not main._lobby.visible and not main._menu.visible)
+	check("the crew list shows in orbit", main._crew_panel.visible and main._crew_label.text.begins_with("CREW 1 / 4"))
+	check("the HUD says the ship is in orbit, with the crew's credits", main._top_label.text.begins_with("IN ORBIT") and main._top_label.text.contains("Credits $60"))
+	check("the banner says where the ship lands next", main._banner_label.visible and main._banner_label.text.contains("Rust Foundry"))
+	check("orbit has no facility and no creatures", Session.layout == null and Session.level != null and Session.entity_root.get_child_count() == 0)
+	check("mouse is captured in the ship", Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+	var screen := get_viewport().get_visible_rect()
+	check("the crew list fits on screen", screen.encloses(main._crew_panel.get_global_rect()))
+	check("the orbit HUD text fits on screen", screen.encloses(main._top_label.get_global_rect()))
+	me().rotation.y = PI
+	me().teleport(Vector3(0, 0.1, -11.0))
+	await _shot("2_orbit_window")
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, -7.0))
+	await _shot("2a_orbit")
+
+	# The terminal, with the real E key and the real buttons.
+	me().rotation.y = -PI * 0.5
+	me().teleport(Rules.TERMINAL_POS + Vector3(-1.4, 0.1, 0))
+	await wait(0.3)
+	check("the terminal prompt shows", me().interact_prompt.begins_with("E: use the terminal"))
+	await _shot("2b_terminal_in_ship")
+	await _press(KEY_E)
+	check("E opens the terminal and frees the mouse", main._terminal.visible and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE)
+	check("the terminal lists all the gear", main._terminal_buttons.size() == Tools.ORDER.size() and main._terminal_credits.text.contains("$60"))
+	check("gear the crew can't afford can't be bought", main._terminal_buttons[Tools.ZAP_GUN].disabled and not main._terminal_buttons[Tools.SHOVEL].disabled)
+	check("the terminal fits on screen", screen.encloses(main._terminal.get_global_rect()))
+	await _shot("2c_terminal")
+	main._terminal_buttons[Tools.SHOVEL].pressed.emit()
+	check("buying a shovel spends the crew's credits", await until(func() -> bool: return Session.credits == 30, 2.0))
+	check("the terminal confirms the purchase", main._terminal_message.text.contains("bought"))
+	check("the terminal shows what's left", main._terminal_credits.text.contains("$30"))
+	var shovel := gear(Tools.SHOVEL)
+	check("the shovel appears in the ship", shovel != null and Rules.in_ship(shovel.position))
+	await _press(KEY_ESCAPE)
+	check("Esc closes the terminal without pausing", not main._terminal.visible and not main._pause.visible and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(shovel.position.x, 0.1, shovel.position.z + 1.5))
+	await wait(0.3)
+	check("gear shows a pick-up prompt", me().interact_prompt.begins_with("E: pick up Shovel"))
+	await _press(KEY_E)
+	check("gear can be picked up in orbit", await until(func() -> bool: return shovel.holder_id == 1, 2.0))
+	check("held gear says how to use it", await until(func() -> bool: return me().interact_prompt.begins_with("Left click: swing the shovel"), 1.0))
+	await _shot("2d_holding_shovel")
+
+	# Pulling the lever lands the ship.
+	me().rotation.y = 0.0
+	me().teleport(Rules.CONSOLE_POS + Vector3(0, 0.1, 1.6))
+	await wait(0.3)
+	check("the console offers to land", me().interact_prompt.begins_with("E: pull the lever and land on Rust Foundry"))
+	await _press(KEY_E)
+	check("pulling the lever lands the ship", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0))
+	check("the crew lands holding their gear", is_instance_valid(shovel) and shovel.holder_id == 1)
+	await wait(0.2)
+	check("the HUD shows the facility, not orbit", not main._crew_panel.visible and main._top_label.text.begins_with("Rust Foundry"))
 	check("mouse is captured for looking around", Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.2)
+	await _press(KEY_G)
+	check("gear can be put down in the ship", await until(func() -> bool: return shovel.holder_id == 0, 2.0))
 	await _shot("3_ship")
 
 	# Real keyboard: walking.
@@ -593,7 +659,6 @@ func _ui() -> void:
 	await wait(0.3)
 	check("the pick-up prompt shows", me().interact_prompt.begins_with("E: pick up"))
 	await _shot("4_scrap_in_facility")
-	var screen := get_viewport().get_visible_rect()
 	check("the HUD text stays on one line", main._top_label.size.y < 60.0)
 	check("the HUD text fits on screen", screen.encloses(main._top_label.get_global_rect()))
 	check("the prompt is fully on screen", screen.encloses(main._prompt_label.get_global_rect()))
@@ -700,6 +765,29 @@ func _ui() -> void:
 	await _ui_backpack(main)
 	await _ui_settings(main)
 
+	# A real left click swings the shovel at the Stalker.
+	me().rotation.y = 0.0
+	me().teleport(Vector3(shovel.position.x, 0.1, shovel.position.z + 1.5))
+	await wait(0.3)
+	await _press(KEY_E)
+	await until(func() -> bool: return shovel.holder_id == 1, 2.0)
+	var stalker := Session.entity_of_kind("stalker")
+	var hits_before := stalker.hits_left()
+	stalker.position = Vector3(me().position.x, 0.0, me().position.z - 1.6)
+	stalker.net_pos = stalker.position
+	stalker.rotation.y = PI
+	await wait(0.2)
+	await _click(MOUSE_BUTTON_LEFT)
+	check("left click swings the shovel and hits the Stalker", await until(func() -> bool: return stalker.hits_left() == hits_before - 1 and stalker.net_stunned, 2.0))
+	check("the swing and the hit are heard", Sfx.play_count.get("swing", 0) >= 1 and Sfx.play_count.get("bonk", 0) >= 1)
+	await _shot("9_shovel_hit")
+	stalker.position = Vector3(40, 0, 40)
+	stalker.net_pos = stalker.position
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.2)
+	await _press(KEY_G)
+	await until(func() -> bool: return shovel.holder_id == 0, 2.0)
+
 	# Pause menu.
 	await _press(KEY_ESCAPE)
 	check("Esc opens the pause menu and frees the mouse", main._pause.visible and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE)
@@ -724,15 +812,28 @@ func _ui() -> void:
 	check("the mouse is freed on results", Input.mouse_mode == Input.MOUSE_MODE_VISIBLE)
 	await _shot("8_results")
 
-	# The random scrap may have met the quota. If so the next round starts, and the
-	# timer running out with nothing in the ship ends the run instead.
+	check("the results show the crew's credits", main._results_label.text.contains("Credits: $%d" % Session.last_results.credits))
+
+	# The random scrap may have met the quota. If so the ship goes back to orbit with
+	# the shovel, and the timer running out with nothing in the ship ends the run instead.
 	if Session.last_results.cleared:
-		check("a met quota starts the next round", await until(func() -> bool: return Session.round_number == 2 and Session.phase == Session.Phase.PLAYING, 8.0))
+		check("the results say the gear was kept", main._results_label.text.contains("Gear kept in the ship: 1"))
+		check("after a good day the ship returns to orbit", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 8.0))
+		check("gear left in the ship is still there", gear(Tools.SHOVEL) != null)
+		check("banked scrap became credits", Session.credits == 30 + Session.last_results.collected)
+		await wait(0.3)
+		me().rotation.y = 0.0
+		me().teleport(Rules.CONSOLE_POS + Vector3(0, 0.1, 1.6))
+		await wait(0.3)
+		await _press(KEY_E)
+		check("the lever lands the ship again", await until(func() -> bool: return Session.round_number == 2 and Session.phase == Session.Phase.PLAYING, 3.0))
 		Session.time_left = 0.5
 
-	# End of the run, then leaving.
-	check("the crew gets back to the lobby", await until(func() -> bool: return Session.phase == Session.Phase.LOBBY, 8.0))
-	check("the lobby shows after the run", main._lobby.visible)
+	# End of the run: a new one starts in orbit, from scratch.
+	check("the crew is back in orbit for a new run", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and Session.round_number == 0, 10.0))
+	check("a new run has fresh credits and no gear", Session.credits == Rules.STARTING_CREDITS and Session.gear_count() == 0)
+	await wait(0.3)
+	check("the crew list shows after the run", main._crew_panel.visible)
 
 	# Every map: how it looks, and its frame rate at the largest size (8 x 8 rooms).
 	for map: String in MapThemes.ORDER:
@@ -789,14 +890,15 @@ func _ui() -> void:
 	await wait(0.2)
 	check("leaving returns to the menu", main._menu.visible)
 
-	# One click from the menu into a round.
+	# One click from the menu back into the ship.
 	Session.forced_maps = ["cryo"]
 	main._play_button.pressed.emit()
-	check("Play now goes straight into a round", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and me() != null, 3.0))
-	check("Play now shows the game, not a menu", main._hud.visible and not main._menu.visible and not main._lobby.visible)
+	check("Play goes straight into the ship", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 3.0))
+	check("Play shows the game, not a menu", main._hud.visible and not main._menu.visible and not main._lobby.visible)
+	check("the next stop follows the run's maps", Session.next_map == "cryo")
 	Net.leave()
 	await wait(0.2)
-	check("leaving Play now returns to the menu", main._menu.visible)
+	check("leaving returns to the menu", main._menu.visible)
 
 
 func _pad_button(button: JoyButton) -> void:
@@ -1362,6 +1464,7 @@ func _days() -> void:
 	check("host opens", Net.host("Host", port) == OK)
 	Session.entities_enabled = false
 	Session.results_seconds = 0.7
+	Session.land_automatically = true
 	Session.forced_maps = []
 	Session.goal_override = 100
 	var main: Control = load("res://scenes/main.tscn").instantiate()
@@ -1377,6 +1480,7 @@ func _days() -> void:
 	var results: Dictionary = Session.last_results
 	check("day 1: the run carries on", Session.phase == Session.Phase.RESULTS and results.run_over == false and results.cleared == false)
 	check("day 1: the amounts are reported", results.collected == 40 and results.banked == 40 and results.day == 1 and results.days == 4)
+	check("banked scrap becomes credits", results.credits == Rules.STARTING_CREDITS + 40 and Session.credits == Rules.STARTING_CREDITS + 40)
 	check("the results say how many days are left", main._results_label.text.begins_with("Day over. 3 days left"))
 	check("the results show progress toward the goal", main._results_label.text.contains("Goal: $40 of $100"))
 	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == 2, 5.0)
@@ -1393,6 +1497,7 @@ func _days() -> void:
 	results = Session.last_results
 	check("a wipe doesn't end the run", Session.phase == Session.Phase.RESULTS and results.run_over == false)
 	check("a wipe loses that day's scrap", results.collected == 0 and results.banked == 40)
+	check("a wipe earns no credits", results.credits == Rules.STARTING_CREDITS + 40)
 	check("the results explain a wipe", main._results_label.text.contains("Nobody made it back") and main._results_label.text.begins_with("Day over. 2 days left"))
 	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == 3, 5.0)
 	check("a wipe still uses up the day", Session.day == 3 and Session.level_banked == 40)
@@ -1421,7 +1526,8 @@ func _days() -> void:
 	check("missing the goal on day 4 ends the run", Session.phase == Session.Phase.GAME_OVER and results.run_over == true and results.cleared == false)
 	check("the run total includes every day", results.total_scrap == 40 + 60 + 40)
 	check("the results say the run is over", main._results_label.text.begins_with("Out of days."))
-	check("the crew returns to the lobby", await until(func() -> bool: return Session.phase == Session.Phase.LOBBY, 5.0))
+	check("the crew returns to orbit for a new run", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0))
+	check("a finished run waits in orbit instead of landing", Session.round_number == 0 and Session.credits == Rules.STARTING_CREDITS)
 
 	# Reaching the goal on the very last day still counts.
 	Session.start_run()
@@ -1749,6 +1855,7 @@ func _scenario() -> void:
 	if role == "host":
 		check("host can open a game", Net.host("Host", port) == OK)
 		Session.results_seconds = 2.0
+		Session.land_automatically = true
 		Session.entities_enabled = false
 		Session.forced_maps = ["foundry", "reactor"]
 		Session.goal_override = 60
@@ -2037,19 +2144,395 @@ func _scenario() -> void:
 	check("a failed round is not counted as cleared", Session.last_results.cleared == false and Session.rounds_cleared == 1)
 	check("the map changed for round 2", Session.map_id == "reactor" or Session.phase != Session.Phase.PLAYING)
 	check("the run's end is reported to everyone", Session.last_results.run_over == true)
-	check("the crew returns to the lobby", await until(func() -> bool: return Session.phase == Session.Phase.LOBBY))
-	check("the world is cleared after the run", Session.players_root.get_child_count() == 0 and Session.level == null)
+	check("the crew returns to orbit for a new run", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT))
+	check("the facility is gone and the ship is in orbit", Session.layout == null and Session.level != null and Session.entity_root.get_child_count() == 0)
+	check("everyone is back on board", await until(func() -> bool: return Session.players_root.get_child_count() == 3))
 	check("this player's run was saved to the database", await until(func() -> bool: return Cloud.submit_count >= 1) and Cloud.last_submit_ok)
 	var rows: Array = await Cloud.fetch_leaderboard()
 	check("the leaderboard can be read", rows.size() >= 1)
 	Cloud._access_token = ""
 	check("an expired login renews itself", await Cloud._ensure_signed_in() and Cloud._access_token == "token-refreshed")
 	await barrier("over", 3)
-
-	# The host leaves.
+	if role == "host":
+		print("ORBIT_OPEN")
+	await _scenario_orbit()
 	if role == "host":
 		await wait(0.5)
 		Net.leave()
 	else:
 		check("clients are told the host left", await until(func() -> bool: return _ended_reason == "The host left the game."))
 		check("clients return to the menu", not Net.is_online())
+
+
+# --- After the run: a friend joins the ship in orbit, and the crew gears up --------
+
+## A friend who joins late, while the ship waits in orbit between runs.
+func _late() -> void:
+	check("a friend can start connecting", Net.join("Late", "127.0.0.1", port) == OK)
+	check("a friend can join while the ship is in orbit", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 30.0))
+	check("the late friend sees the whole crew", await until(func() -> bool: return Net.players.size() == 4 and Session.players_root.get_child_count() == 4))
+	check("the late friend is on board the ship", Session.level != null and Rules.in_ship(me().position))
+	check("the late friend gets the run's state", Session.credits == Rules.STARTING_CREDITS and Session.day == 1 and Session.level_number == 1)
+	await _scenario_orbit()
+	check("clients are told the host left", await until(func() -> bool: return _ended_reason == "The host left the game."))
+	check("clients return to the menu", not Net.is_online())
+
+
+func _scenario_orbit() -> void:
+	check("a late friend joins the crew in orbit", await until(func() -> bool: return Net.players.size() == 4 and Session.players_root.get_child_count() == 4, 60.0))
+	var late := peer_named("Late")
+	check("everyone gets the late friend's state", await until(func() -> bool: return Session.is_player_alive(late), 3.0))
+	await barrier("late_joined", 4)
+	var bot1 := peer_named("Bot1")
+	var bot2 := peer_named("Bot2")
+	check("a new run starts with fresh credits", Session.credits == Rules.STARTING_CREDITS)
+
+	# Buying happens at the terminal, from the crew's shared credits.
+	if idx == 2:
+		me().teleport(Vector3(-3.0, 0.1, -7.0))
+		await wait(0.3)
+		Session.request_buy.rpc_id(1, Tools.SHOVEL)
+		await wait(0.5)
+		check("gear can't be bought from across the ship", Session.credits == Rules.STARTING_CREDITS and gear(Tools.SHOVEL) == null)
+	await barrier("far_buy", 4)
+	if idx == 1:
+		me().teleport(Rules.TERMINAL_POS + Vector3(-1.2, 0.1, 0))
+		await wait(0.3)
+		Session.request_buy.rpc_id(1, Tools.SHOVEL)
+		check("the buyer is told it worked", await until(func() -> bool: return _shop_reply.contains("bought"), 3.0))
+	check("everyone sees the credits spent", await until(func() -> bool: return Session.credits == Rules.STARTING_CREDITS - Tools.CATALOG[Tools.SHOVEL].price))
+	check("everyone sees the shovel arrive", await until(func() -> bool: return gear(Tools.SHOVEL) != null))
+	check("everyone hears the terminal", await until(func() -> bool: return "buy" in _effects, 3.0))
+	await barrier("bought", 4)
+	if idx == 1:
+		Session.request_buy.rpc_id(1, Tools.ZAP_GUN)
+		check("the terminal refuses what the crew can't afford", await until(func() -> bool: return _shop_reply.begins_with("Not enough credits"), 3.0))
+	await barrier("too_dear", 4)
+	check("a refused purchase costs nothing", Session.credits == Rules.STARTING_CREDITS - Tools.CATALOG[Tools.SHOVEL].price and gear(Tools.ZAP_GUN) == null)
+
+	# Crewmates can bonk each other with a shovel: everyone sees and hears it.
+	var shovel := gear(Tools.SHOVEL)
+	if idx == 1:
+		me().teleport(Vector3(shovel.position.x, 0.1, shovel.position.z))
+		await wait(0.3)
+		Session.request_pickup.rpc_id(1, shovel.item_id)
+	check("everyone sees who took the shovel", await until(func() -> bool: return shovel.holder_id == bot1))
+	await barrier("armed", 4)
+	if idx == 2:
+		me().teleport(Vector3(0, 0.1, -10.0))
+	elif idx == 1:
+		me().rotation.y = 0.0
+		me().teleport(Vector3(0, 0.1, -8.7))
+	else:
+		# Everyone else stands well clear of the swing.
+		me().teleport(Vector3(3.0 if role == "host" else -3.0, 0.1, -6.0))
+	await barrier("lined_up", 4)
+	await wait(0.5)
+	if idx == 1:
+		Session.request_use_item.rpc_id(1)
+	check("everyone sees a crewmate get bonked", await until(func() -> bool: return Session.player_states[bot2].hp == Rules.PLAYER_MAX_HP - Tools.SHOVEL_CREW_DAMAGE))
+	check("everyone hears the bonk", await until(func() -> bool: return "bonk" in _effects, 3.0))
+	if idx != 1:
+		check("everyone sees the swing", await until(func() -> bool: return Session.player_node(bot1).current_animation == "attack-melee-right", 2.0))
+	await barrier("bonked", 4)
+	# Mashing the button doesn't swing any faster than the shovel can.
+	if idx == 1:
+		await wait(0.8) # Past the first swing's cooldown, so exactly one of these lands.
+		for press in 4:
+			Session.request_use_item.rpc_id(1)
+			await get_tree().physics_frame
+	await wait(1.0)
+	check("mashing the button swings only once", Session.player_states[bot2].hp == Rules.PLAYER_MAX_HP - 2 * Tools.SHOVEL_CREW_DAMAGE)
+	await barrier("mashed", 4)
+
+	# The friend who joined late lands the ship, and the gear comes along.
+	if role == "late":
+		me().rotation.y = 0.0
+		me().teleport(Rules.CONSOLE_POS + Vector3(0, 0.1, 1.5))
+		await wait(0.3)
+		Session.request_launch.rpc_id(1)
+	check("a friend who joined in orbit can land the ship", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING))
+	check("the shovel lands in its owner's hands", is_instance_valid(shovel) and shovel.holder_id == bot1)
+	check("all four land together", await until(func() -> bool: return Session.players_root.get_child_count() == 4))
+	check("everyone lands at full health", await until(func() -> bool: return Session.player_states[bot2].hp == Rules.PLAYER_MAX_HP))
+	print("FACILITY_R3 %d" % Session.layout.fingerprint())
+	await barrier("landed", 4)
+
+
+# --- The crew's gear, against every kind of creature --------------------------------
+
+## Hands this player a piece of gear straight from the rack.
+const FACE_OFF_Z := 3.0
+
+
+func _give(kind: String) -> Scrap:
+	Session._spawn_gear(kind)
+	var given: Scrap = Session.scrap_root.get_node("Scrap%d" % (Session._next_gear_id - 1))
+	for other in Session.items_held_by(Net.my_id()):
+		other.stowed = true
+	given.holder_id = Net.my_id()
+	given.stowed = false
+	return given
+
+
+func _use_gear() -> void:
+	await wait(0.8) # Longer than any piece of gear needs between uses.
+	Session.request_use_item.rpc_id(1)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+
+
+## Stands this player in the entry room, facing the ship, with `entity` this far ahead
+## (negative is behind). Everything stays inside the room, clear of its walls.
+func _face_off(entity: Entity, ahead: float, sideways: float = 0.0) -> void:
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, FACE_OFF_Z))
+	entity.position = Vector3(sideways, entity.position.y, FACE_OFF_Z - ahead)
+	entity.net_pos = entity.position
+	entity._stun_timer = 0.0
+	entity.net_stunned = false
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+
+
+func _all(kind: String) -> Array[Entity]:
+	var found: Array[Entity] = []
+	for entity: Entity in Session.entity_root.get_children():
+		if entity.kind == kind:
+			found.append(entity)
+	return found
+
+
+func _gear() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.results_seconds = 0.7
+	Session.goal_override = 5000
+	Session.open_ship()
+	check("hosting opens the ship in orbit", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 3.0))
+	check("a run starts with credits to spend", Session.credits == Rules.STARTING_CREDITS)
+	check("orbit is the ship on its own", Session.level != null and Session.layout == null and Session.entity_root.get_child_count() == 0)
+	check("the crew starts with no gear", Session.gear_count() == 0)
+	check("the clock doesn't run in orbit", Session.time_left == 0.0)
+	await wait(0.1)
+
+	# Buying.
+	Session.request_buy.rpc_id(1, Tools.SHOVEL)
+	check("gear can only be bought at the terminal", Session.credits == 60 and Session.gear_count() == 0)
+	me().teleport(Rules.TERMINAL_POS + Vector3(-1.2, 0.1, 0))
+	await wait(0.1)
+	Session.request_buy.rpc_id(1, "Gold bar")
+	check("made-up gear can't be bought", Session.credits == 60 and Session.gear_count() == 0)
+	Session.request_buy.rpc_id(1, Tools.SHOVEL)
+	check("a shovel costs its price", Session.credits == 30 and Session.gear_count() == 1 and _shop_reply.contains("bought"))
+	Session.request_buy.rpc_id(1, Tools.STUN_GRENADE)
+	check("so does a stun grenade", Session.credits == 5 and Session.gear_count() == 2)
+	Session.request_buy.rpc_id(1, Tools.ZAP_GUN)
+	check("gear the crew can't afford is refused", Session.credits == 5 and Session.gear_count() == 2 and _shop_reply.begins_with("Not enough credits"))
+	var on_rack := true
+	for bought: Scrap in Session.scrap_root.get_children():
+		on_rack = on_rack and Rules.in_ship(bought.position) and bought.holder_id == 0
+	check("bought gear waits in the ship", on_rack)
+	check("gear has no sale value", Session._ship_value() == 0)
+	Session.credits = 10000
+	for attempt in Rules.TOOL_LIMIT + 2:
+		Session.request_buy.rpc_id(1, Tools.STUN_GRENADE)
+	check("the crew can't own more gear than the limit", Session.gear_count() == Rules.TOOL_LIMIT and _shop_reply.contains("limit"))
+	var spots := {}
+	for bought: Scrap in Session.scrap_root.get_children():
+		spots[Vector2(snappedf(bought.position.x, 0.01), snappedf(bought.position.z, 0.01))] = true
+	check("each piece of gear has its own spot", spots.size() == Rules.TOOL_LIMIT)
+	for extra: Scrap in Session.scrap_root.get_children():
+		if extra.kind == Tools.STUN_GRENADE and extra != gear(Tools.STUN_GRENADE):
+			Session.scrap_root.remove_child(extra)
+			extra.queue_free()
+	Session.credits = 5
+
+	# Landing with gear in hand.
+	var shovel := gear(Tools.SHOVEL)
+	me().teleport(Vector3(shovel.position.x, 0.1, shovel.position.z))
+	await wait(0.1)
+	Session.request_pickup.rpc_id(1, shovel.item_id)
+	check("gear can be picked up in orbit", shovel.holder_id == 1)
+	Session.request_launch.rpc_id(1)
+	check("the ship can't be landed from across the room", Session.phase == Session.Phase.ORBIT)
+	me().teleport(Rules.CONSOLE_POS + Vector3(0, 0.1, 1.5))
+	await wait(0.1)
+	Session.request_launch.rpc_id(1)
+	check("the console lands the ship", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0))
+	check("gear in hand lands with you", is_instance_valid(shovel) and shovel.holder_id == 1 and shovel.get_parent() == Session.scrap_root)
+	check("gear left on the rack is still in the ship", gear(Tools.STUN_GRENADE) != null and Rules.in_ship(gear(Tools.STUN_GRENADE).position))
+	check("scrap appears beside the gear", item(1) != null and not item(1).is_tool())
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.1)
+	check("the prompt says how to use the shovel", me().interact_prompt.begins_with("Left click: swing the shovel"))
+
+	# THE SHOVEL, against the Stalker.
+	_park_everything()
+	var stalker := Session.entity_of_kind("stalker")
+	var full := stalker.hits_left()
+	await _face_off(stalker, 1.8)
+	await _use_gear()
+	check("a shovel hit stuns the Stalker", stalker.net_stunned and stalker.hits_left() == full - 1)
+	check("the hit is heard", "bonk" in _effects and "swing" in _effects)
+	await _face_off(stalker, 3.4)
+	await _use_gear()
+	check("a shovel only reaches arm's length", stalker.hits_left() == full - 1 and not stalker.net_stunned)
+	await _face_off(stalker, -1.0)
+	await _use_gear()
+	check("a shovel only hits what's in front of you", stalker.hits_left() == full - 1)
+	await _face_off(stalker, 1.8)
+	await wait(0.8)
+	for press in 3:
+		Session.request_use_item.rpc_id(1)
+	await get_tree().physics_frame
+	for press in 3:
+		Session.request_use_item.rpc_id(1)
+		await get_tree().physics_frame
+	check("mashing the button only swings once", stalker.hits_left() == full - 2)
+	while is_instance_valid(stalker) and stalker.get_parent() != null and stalker.hits_left() > 0:
+		await _use_gear()
+	check("enough hits finish off the Stalker", Session.entity_of_kind("stalker") == null and "kill" in _effects)
+
+	# A Mimic goes down in one, and helpers are never hit.
+	var mimic := Session.entity_of_kind("mimic")
+	await _face_off(mimic, 1.8)
+	await _use_gear()
+	check("one shovel hit finishes a Mimic", not is_instance_valid(mimic) or mimic.get_parent() == null)
+	var sentinel := Session.entity_of_kind("sentinel")
+	var bonks := _effects.count("bonk")
+	await _face_off(sentinel, 1.8)
+	await _use_gear()
+	check("the shovel never hits a friendly helper", _effects.count("bonk") == bonks and sentinel.get_parent() == Session.entity_root)
+	_park_everything()
+
+	# A crewmate in the way gets bonked. Peer 999 stands in for them.
+	Session.player_states[999] = {"hp": 100, "alive": true}
+	var crewmate: Player = Session._spawn_player({"peer": 999, "name": "Crewmate", "index": 1, "pos": Vector3(0, 0, FACE_OFF_Z - 1.5)})
+	Session.players_root.add_child(crewmate)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, FACE_OFF_Z))
+	await _use_gear()
+	check("a shovel bonks a crewmate in front of you", Session.player_states[999].hp == 100 - Tools.SHOVEL_CREW_DAMAGE)
+	Session.players_root.remove_child(crewmate)
+	crewmate.queue_free()
+	Session.player_states.erase(999)
+
+	# THE ZAP GUN, against the Watcher.
+	await _fresh_round("cryo")
+	var zap := _give(Tools.ZAP_GUN)
+	check("a zap gun comes charged", zap.charges == Tools.CATALOG[Tools.ZAP_GUN].charges)
+	var watcher := Session.entity_of_kind("watcher")
+	await _face_off(watcher, 7.0)
+	await _use_gear()
+	check("a zap freezes the hunter you aim at", watcher.net_stunned and zap.charges == 2 and "zap" in _effects)
+	await _use_gear()
+	check("an already-frozen hunter isn't zapped again", zap.charges == 2)
+	await _face_off(watcher, 4.0, 4.0)
+	await _use_gear()
+	check("a zap that misses costs nothing", not watcher.net_stunned and zap.charges == 2 and "fizzle" in _effects)
+	var wall := _find_wall()
+	if not wall.is_empty():
+		me().rotation.y = -PI * 0.5
+		me().teleport(FacilityLayout.cell_center(wall[0]) + Vector3(0, 0.1, 0))
+		watcher.position = FacilityLayout.cell_center(wall[1])
+		watcher.net_pos = watcher.position
+		await get_tree().physics_frame
+		await _use_gear()
+		check("a zap can't go through walls", not watcher.net_stunned and zap.charges == 2)
+	await _face_off(watcher, 7.0)
+	await _use_gear()
+	await _face_off(watcher, 7.0)
+	await _use_gear()
+	check("each zap uses a charge", zap.charges == 0)
+	await _face_off(watcher, 7.0)
+	await _use_gear()
+	check("an empty zap gun does nothing", not watcher.net_stunned and "empty" in _effects)
+	check("the HUD says it's empty", me().interact_prompt.contains("empty"))
+
+	# THE STUN GRENADE, against the Listeners.
+	await _fresh_round("reactor")
+	var grenade := _give(Tools.STUN_GRENADE)
+	var listeners := _all("listener")
+	await _face_off(listeners[0], 6.0)
+	listeners[1].position = Vector3(0, listeners[1].position.y, FACE_OFF_Z - 22.0)
+	listeners[1].net_pos = listeners[1].position
+	await _use_gear()
+	check("a thrown grenade leaves your hands", grenade.holder_id == 0 and grenade.armed and Session.item_held_by(1) == null)
+	Session.request_pickup.rpc_id(1, grenade.item_id)
+	check("a live grenade can't be picked up", grenade.holder_id == 0)
+	await wait(0.6)
+	check("the grenade lands ahead of you", grenade.position.distance_to(Vector3(0, Scrap.FLOOR_HEIGHT, FACE_OFF_Z - Tools.THROW_DISTANCE)) < 0.3)
+	check("nothing is stunned before the bang", not listeners[0].net_stunned)
+	check("the bang comes after the fuse", await until(func() -> bool: return gear(Tools.STUN_GRENADE) == null, 3.0))
+	await get_tree().physics_frame # Each player's view of the bang is checked on the next physics step.
+	check("the bang stuns a hunter nearby", listeners[0].net_stunned)
+	check("hunters out of range aren't stunned", not listeners[1].net_stunned)
+	check("the grenade is used up", gear(Tools.STUN_GRENADE) == null and "boom" in _effects)
+	check("looking at the bang blinds you", Session.blind_seconds > 1.0)
+	wall = _find_wall()
+	if not wall.is_empty():
+		_give(Tools.STUN_GRENADE)
+		var near := listeners[0]
+		var behind := listeners[1]
+		for entity: Entity in [near, behind]:
+			entity._stun_timer = 0.0
+			entity.net_stunned = false
+		me().rotation.y = -PI * 0.5
+		me().teleport(FacilityLayout.cell_center(wall[0]) + Vector3(-3.0, 0.1, 0))
+		near.position = FacilityLayout.cell_center(wall[0]) + Vector3(1.0, 0, 2.0)
+		behind.position = FacilityLayout.cell_center(wall[1]) + Vector3(-1.5, 0, 0)
+		for entity: Entity in [near, behind]:
+			entity.position.y = 0.0
+			entity.net_pos = entity.position
+		await _use_gear()
+		await until(func() -> bool: return gear(Tools.STUN_GRENADE) == null, 3.0)
+		check("a grenade stuns hunters on its side of a wall", near.net_stunned)
+		check("a wall shields hunters from the bang", not behind.net_stunned)
+
+	# Vents can't be fought.
+	await _fresh_round("biolab")
+	_give(Tools.SHOVEL)
+	var vent := Session.entity_of_kind("gas")
+	var bonked := _effects.count("bonk")
+	await _face_off(vent, 1.5)
+	await _use_gear()
+	check("a shovel does nothing to a gas vent", _effects.count("bonk") == bonked and vent.get_parent() == Session.entity_root)
+
+	# Gear left in the ship is kept for tomorrow; gear left outside is lost.
+	await _fresh_round("foundry")
+	var lost := _give(Tools.STUN_GRENADE)
+	me().teleport(Vector3(0, 0.1, 2.0))
+	await wait(0.1)
+	Session.request_drop.rpc_id(1)
+	check("gear can be left outside", lost.holder_id == 0 and not Rules.in_ship(lost.position))
+	var kept := _give(Tools.SHOVEL)
+	me().teleport(Vector3(1.0, 0.1, -9.0))
+	await wait(0.1)
+	Session.request_drop.rpc_id(1)
+	var used := _give(Tools.ZAP_GUN)
+	used.charges = 0
+	var banked: Scrap = item(1)
+	banked.position = Vector3(-1.0, Scrap.FLOOR_HEIGHT, -9.0)
+	var credits_before := Session.credits
+	await wait(0.1)
+	Session._end_round()
+	check("the results count the gear kept", Session.last_results.gear_kept == 2)
+	check("banked scrap becomes credits", Session.credits == credits_before + banked.value)
+	check("the ship goes back to orbit after the day", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0))
+	check("gear left in the ship is back on the rack", gear(Tools.SHOVEL) != null and gear(Tools.ZAP_GUN) != null)
+	check("gear left outside is gone", gear(Tools.STUN_GRENADE) == null and Session.gear_count() == 2)
+	check("the zap gun is recharged in orbit", gear(Tools.ZAP_GUN).charges == Tools.CATALOG[Tools.ZAP_GUN].charges)
+	check("nobody holds anything in orbit until they pick it up", Session.items_held_by(1).is_empty())
+
+	# A run that ends takes everything with it.
+	Session.day = Session.days_per_level
+	Session.start_run()
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0)
+	await wait(0.1)
+	Session._end_round()
+	check("the last day's failure ends the run", Session.phase == Session.Phase.GAME_OVER)
+	check("a new run starts in orbit", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0))
+	check("a new run has fresh credits and no gear", Session.credits == Rules.STARTING_CREDITS and Session.gear_count() == 0)
+	Net.leave()

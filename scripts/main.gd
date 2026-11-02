@@ -13,7 +13,6 @@ var _menu_status: Label
 var _play_button: Button
 var _board_label: Label
 var _lobby_list: Label
-var _start_button: Button
 var _top_label: Label
 var _banner_label: Label
 var _hint_label: Label
@@ -43,6 +42,14 @@ var _qr_frame: PanelContainer
 var _qr_image: TextureRect
 var _qr_label: Label
 var _shop_open := false
+var _crew_panel: PanelContainer
+var _crew_label: Label
+var _blind: ColorRect
+var _terminal: PanelContainer
+var _terminal_credits: Label
+var _terminal_message: Label
+var _terminal_buttons := {} # gear kind -> its Buy button
+var _terminal_open := false
 
 
 func _ready() -> void:
@@ -55,6 +62,7 @@ func _ready() -> void:
 	_build_pause()
 	_build_results()
 	_build_shop()
+	_build_terminal()
 	_settings_menu = SettingsMenu.new()
 	_settings_menu.visible = false
 	_settings_menu.closed.connect(_close_settings)
@@ -65,7 +73,11 @@ func _ready() -> void:
 	Net.connected.connect(_on_connected)
 	Net.connection_ended.connect(_on_connection_ended)
 	Session.phase_changed.connect(_refresh)
+	Session.phase_changed.connect(_close_terminal_if_gone)
 	Session.results_ready.connect(_on_results)
+	Session.terminal_requested.connect(_open_terminal)
+	Session.shop_replied.connect(_on_shop_replied)
+	Session.stats_changed.connect(_refresh_terminal)
 	Cloud.leaderboard_received.connect(_on_leaderboard)
 	_refresh()
 	Cloud.fetch_leaderboard()
@@ -74,16 +86,30 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if not _hud.visible:
 		return
-	var seconds := int(ceil(Session.time_left))
-	var theme: Dictionary = MapThemes.get_theme(Session.map_id)
-	_top_label.text = "%s    Level %d    Day %d of %d    Time %d:%02d    In ship $%d    Goal $%d / $%d" % [
-		theme.name, Session.level_number, Session.day, Session.days_per_level, seconds / 60, seconds % 60,
-		Session.in_ship_value, Session.level_banked + Session.in_ship_value, Session.quota]
-	_banner_label.visible = Session.banner_seconds > 0.0
-	_banner_label.text = "%s\n%s\n%s" % [theme.name.to_upper(), theme.tagline, theme.rule]
-	_hint_label.visible = Session.hint_seconds > 0.0
+	var in_orbit := Session.phase == Session.Phase.ORBIT
+	if in_orbit:
+		var next: Dictionary = MapThemes.get_theme(Session.next_map)
+		_top_label.text = "IN ORBIT    Level %d    Day %d of %d    Goal $%d / $%d    Credits $%d" % [
+			Session.level_number, Session.day, Session.days_per_level, Session.level_banked, Session.quota, Session.credits]
+		_banner_label.text = "IN ORBIT\nNext stop: %s\nBuy gear at the terminal, then pull the lever at the console to land." % next.name
+		_update_crew_panel()
+	else:
+		var seconds := int(ceil(Session.time_left))
+		var theme: Dictionary = MapThemes.get_theme(Session.map_id)
+		_top_label.text = "%s    Level %d    Day %d of %d    Time %d:%02d    In ship $%d    Goal $%d / $%d" % [
+			theme.name, Session.level_number, Session.day, Session.days_per_level, seconds / 60, seconds % 60,
+			Session.in_ship_value, Session.level_banked + Session.in_ship_value, Session.quota]
+		_banner_label.text = "%s\n%s\n%s" % [theme.name.to_upper(), theme.tagline, theme.rule]
+	_crew_panel.visible = in_orbit
+	# The terminal covers the middle of the screen, so nothing else is shown behind it.
+	_banner_label.visible = Session.banner_seconds > 0.0 and not _terminal_open
+	_prompt_label.visible = not _terminal_open
+	_crosshair.visible = Settings.value("crosshair") and not _terminal_open
+	_blind.visible = Session.blind_seconds > 0.0
+	_blind.color.a = clampf(Session.blind_seconds / Tools.BLIND_SECONDS, 0.0, 1.0)
+	_close_terminal_if_gone()
+	_hint_label.visible = Session.hint_seconds > 0.0 and not _terminal_open
 	_hint_label.text = Session.hint_text
-	_crosshair.visible = Settings.value("crosshair")
 	var player := Session.player_node(Net.my_id())
 	if player != null:
 		_prompt_label.text = player.interact_prompt
@@ -94,13 +120,27 @@ func _process(_delta: float) -> void:
 	_health_bar.value = state.hp
 
 
+func _update_crew_panel() -> void:
+	var lines := PackedStringArray(["CREW %d / %d" % [Net.players.size(), Rules.MAX_PLAYERS]])
+	var peers: Array = Net.players.keys()
+	peers.sort()
+	for peer: int in peers:
+		lines.append(("%s (host)" if peer == 1 else "%s") % Net.players[peer])
+	if multiplayer.is_server():
+		var addresses := Net.local_addresses()
+		if not addresses.is_empty():
+			lines.append("")
+			lines.append("Friends join with:\n%s" % addresses[0])
+	_crew_label.text = "\n".join(lines)
+
+
 func _update_backpack() -> void:
 	var carried := Session.items_held_by(Net.my_id())
 	for index in _carry_slots.size():
 		var slot: PanelContainer = _carry_slots[index]
 		var label: Label = slot.get_child(0)
 		var item: Scrap = carried[index] if index < carried.size() else null
-		label.text = "%s\n$%d" % [item.kind, item.value] if item != null else ""
+		label.text = item.describe().replace(" (", "\n(") if item != null else ""
 		var in_hand := item != null and not item.stowed
 		slot.add_theme_stylebox_override("panel", _slot_hand_style if in_hand else _slot_style)
 
@@ -121,7 +161,7 @@ func _update_phone(player: Player) -> void:
 		_phone_status.add_theme_color_override("font_color", Color(1.0, 0.3, 0.25))
 	else:
 		_phone_status.text = "%s: photo    %s: record %.0f s    %s: put away" % [
-			Settings.prompt_for("phone_photo"), Settings.prompt_for("phone_record"),
+			Settings.prompt_for("use_item"), Settings.prompt_for("phone_record"),
 			PhoneCamera.RECORD_SECONDS, Settings.prompt_for("phone")]
 		_phone_status.remove_theme_color_override("font_color")
 
@@ -133,7 +173,10 @@ func _open_captures_folder() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event.is_action_pressed("pause") and Session.phase == Session.Phase.PLAYING and not _settings_open:
+	if _terminal_open and (event.is_action_pressed("pause") or event.is_action_pressed("ui_cancel")):
+		_close_terminal()
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("pause") and Session.in_world() and not _settings_open:
 		_set_paused(not _paused)
 	elif event is InputEventMouseButton and event.pressed and _hud.visible and not _paused:
 		_update_mouse()
@@ -148,18 +191,19 @@ func _refresh() -> void:
 	_qr_panel.visible = not online and _shop_open and Store.order.has("status")
 	_shop_button.visible = Store.payments_allowed()
 	_lobby.visible = online and phase == Session.Phase.LOBBY
-	_hud.visible = online and phase == Session.Phase.PLAYING
+	_hud.visible = online and Session.in_world()
 	_results.visible = online and (phase == Session.Phase.RESULTS or phase == Session.Phase.GAME_OVER)
-	if phase != Session.Phase.PLAYING or not online:
+	if not Session.in_world() or not online:
 		_paused = false
+		_terminal_open = false
 	_pause.visible = _paused and not _settings_open
+	_terminal.visible = _terminal_open and not _paused and not _settings_open
 	var lines := PackedStringArray()
 	var peers: Array = Net.players.keys()
 	peers.sort()
 	for peer: int in peers:
 		lines.append(("%s (host)" if peer == 1 else "%s") % Net.players[peer])
 	_lobby_list.text = "\n".join(lines) if not lines.is_empty() else "Joining..."
-	_start_button.visible = online and multiplayer.is_server()
 	_update_mouse()
 	_update_focus()
 
@@ -170,7 +214,7 @@ func _set_paused(paused: bool) -> void:
 
 
 func _update_mouse() -> void:
-	var in_game := _hud.visible and not _paused and not _settings_open
+	var in_game := _hud.visible and not _paused and not _settings_open and not _terminal_open
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if in_game else Input.MOUSE_MODE_VISIBLE
 
 
@@ -182,7 +226,7 @@ func _update_focus() -> void:
 			_settings_menu.focus_first()
 		return
 	var panel: Control = null
-	for candidate: Control in [_menu, _lobby, _pause, _shop, _qr_panel]:
+	for candidate: Control in [_menu, _lobby, _pause, _shop, _qr_panel, _terminal]:
 		if candidate.visible:
 			panel = candidate
 	if panel == null:
@@ -206,20 +250,15 @@ func _close_settings() -> void:
 	_refresh()
 
 
+## One click: host a game and wait in the ship, where friends can join you.
 func _on_host_pressed() -> void:
 	var error := Net.host(_name_edit.text)
 	if error != OK:
 		_menu_status.text = "Could not host: %s. Is another copy already hosting?" % error_string(error)
 		return
 	_menu_status.text = ""
+	Session.open_ship()
 	_refresh()
-
-
-## One click: host a private game and start the first round straight away.
-func _on_play_now_pressed() -> void:
-	_on_host_pressed()
-	if Net.is_online():
-		Session.start_run()
 
 
 func _on_join_pressed() -> void:
@@ -252,8 +291,11 @@ func _on_results(data: Dictionary) -> void:
 	var today := "Banked today: $%d" % data.collected
 	if data.survivors == 0:
 		today = "Nobody made it back. Today's scrap is lost."
-	_results_label.text = "%s\n\nLevel %d, day %d of %d\n%s\nGoal: $%d of $%d\nSurvivors: %d\nRun total: $%d" % [
-		headline, data.level, data.day, data.days, today, data.banked, data.quota, data.survivors, data.total_scrap]
+	var gear := "Gear kept in the ship: %d" % data.gear_kept
+	if data.run_over:
+		gear = "A new run starts with fresh credits and no gear."
+	_results_label.text = "%s\n\nLevel %d, day %d of %d\n%s\nGoal: $%d of $%d\nSurvivors: %d\nRun total: $%d\nCredits: $%d\n%s" % [
+		headline, data.level, data.day, data.days, today, data.banked, data.quota, data.survivors, data.total_scrap, data.credits, gear]
 
 
 func _on_leaderboard(rows: Array) -> void:
@@ -318,6 +360,55 @@ func _refresh_order() -> void:
 	_refresh()
 
 
+# --- The ship's terminal --------------------------------------------------------
+
+func _open_terminal() -> void:
+	if not Session.in_world() or _paused or _settings_open:
+		return
+	_terminal_open = true
+	_terminal_message.text = ""
+	_refresh_terminal()
+	Sfx.play_2d("console", -10.0)
+	_refresh()
+
+
+func _close_terminal() -> void:
+	if not _terminal_open:
+		return
+	_terminal_open = false
+	get_viewport().gui_release_focus()
+	_refresh()
+
+
+## Walking away, dying or the ship taking off all close the terminal.
+func _close_terminal_if_gone() -> void:
+	if not _terminal_open:
+		return
+	var me := Session.player_node(Net.my_id())
+	if not Session.in_world() or me == null or not me.is_alive() or me.position.distance_to(Rules.TERMINAL_POS) > Rules.SERVER_RANGE:
+		_close_terminal()
+
+
+func _refresh_terminal() -> void:
+	_terminal_credits.text = "Crew credits: $%d    Gear owned: %d / %d" % [Session.credits, Session.gear_count(), Rules.TOOL_LIMIT]
+	for kind: String in _terminal_buttons:
+		var button: Button = _terminal_buttons[kind]
+		var price: int = Tools.CATALOG[kind].price
+		button.disabled = Session.credits < price
+		button.text = "Buy  $%d" % price
+
+
+func _buy(kind: String) -> void:
+	_terminal_message.text = "Ordering..."
+	Session.request_buy.rpc_id(1, kind)
+
+
+func _on_shop_replied(ok: bool, message: String) -> void:
+	_terminal_message.text = message
+	_terminal_message.add_theme_color_override("font_color", Color(0.55, 1.0, 0.6) if ok else Color(1.0, 0.45, 0.4))
+	_refresh_terminal()
+
+
 # --- UI construction --------------------------------------------------------
 
 func _panel() -> Array:
@@ -365,8 +456,7 @@ func _build_menu() -> void:
 	_name_edit.text = "Player"
 	_name_edit.max_length = 16
 	box.add_child(_name_edit)
-	_play_button = _button(box, "Play now", _on_play_now_pressed)
-	_button(box, "Host a game with friends", _on_host_pressed)
+	_play_button = _button(box, "Play (friends can join you)", _on_host_pressed)
 	_label(box, "Host's address (leave empty for this computer)")
 	_address_edit = LineEdit.new()
 	_address_edit.placeholder_text = "127.0.0.1"
@@ -384,9 +474,8 @@ func _build_lobby() -> void:
 	var parts := _panel()
 	_lobby = parts[0]
 	var box: VBoxContainer = parts[1]
-	_label(box, "Crew (up to %d)" % Rules.MAX_PLAYERS, 24)
+	_label(box, "Boarding the ship...", 24)
 	_lobby_list = _label(box, "")
-	_start_button = _button(box, "Start the shift", Session.start_run)
 	_button(box, "Leave", Net.leave)
 
 
@@ -428,6 +517,14 @@ func _build_hud() -> void:
 	_crosshair.grow_vertical = Control.GROW_DIRECTION_BOTH
 	_build_phone_panel()
 	_build_backpack_slots()
+	_build_crew_panel()
+	# A stun grenade you looked at turns the screen white for a moment.
+	_blind = ColorRect.new()
+	_blind.color = Color(1, 1, 1, 0)
+	_blind.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_blind.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_blind.visible = false
+	_hud.add_child(_blind)
 	_health_bar = _bar(Vector2(20, -70), Rules.PLAYER_MAX_HP, Color(0.8, 0.2, 0.2))
 	_stamina_bar = _bar(Vector2(20, -40), 1.0, Color(0.3, 0.7, 0.3))
 	_stamina_bar.step = 0.01
@@ -459,6 +556,47 @@ func _build_backpack_slots() -> void:
 	row.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	row.position.x = 256.0
 	row.position.y -= 16.0
+
+
+func _build_crew_panel() -> void:
+	_crew_panel = PanelContainer.new()
+	_crew_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(_crew_panel)
+	_crew_label = _label(_crew_panel, "", 18)
+	_crew_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_crew_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
+	_crew_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_crew_panel.position.y = 56.0
+	_crew_panel.visible = false
+
+
+func _build_terminal() -> void:
+	var parts := _panel()
+	_terminal = parts[0]
+	_terminal.custom_minimum_size = Vector2(620, 0)
+	# Solid, like a real screen, so the game behind it can't make it hard to read.
+	var screen := StyleBoxFlat.new()
+	screen.bg_color = Color(0.03, 0.07, 0.05, 0.97)
+	screen.border_color = Color(0.35, 0.85, 0.5)
+	screen.set_border_width_all(2)
+	screen.set_corner_radius_all(6)
+	_terminal.add_theme_stylebox_override("panel", screen)
+	var box: VBoxContainer = parts[1]
+	_label(box, "SHIP TERMINAL", 28)
+	_label(box, "Gear is paid for with the crew's credits. Every dollar of scrap you bank earns one.")
+	_terminal_credits = _label(box, "", 18)
+	for kind: String in Tools.ORDER:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		box.add_child(row)
+		var about := _label(row, "%s\n%s" % [kind.to_upper(), Tools.CATALOG[kind].about], 15)
+		about.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var buy := _button(row, "Buy", _buy.bind(kind))
+		buy.custom_minimum_size = Vector2(110, 0)
+		buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		_terminal_buttons[kind] = buy
+	_terminal_message = _label(box, "")
+	_button(box, "Close", _close_terminal)
 
 
 func _build_phone_panel() -> void:

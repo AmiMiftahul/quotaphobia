@@ -5,15 +5,16 @@ extends Node3D
 ## room to room through door centres, so they can't clip walls.
 
 const THINK_SECONDS := 0.4
+# "hits": shovel blows that finish it off. 0 means no weapon can hurt it.
 const INFO := {
-	"stalker": {"hostile": true, "hint": "THE STALKER: outrun it, break away, or reach the ship."},
-	"watcher": {"hostile": true, "hint": "THE WATCHER: it only moves when nobody can see it. Keep your eyes on it."},
-	"listener": {"hostile": true, "hint": "THE LISTENER: it's blind and hunts by sound. Don't sprint. Stand still to hide."},
-	"mimic": {"hostile": true, "hint": "A MIMIC: it looks like scrap. Real scrap shows a pick-up prompt. This didn't."},
-	"gas": {"hostile": true, "hint": "TOXIC VENT: it opens and closes. Wait until it's clear, then cross."},
-	"patch": {"hostile": false, "hint": "PATCH: a friendly drone. Stay close to it to heal. Its charge runs out."},
-	"sentinel": {"hostile": false, "hint": "SENTINEL: a friendly pylon. Lead hunters past it and it stuns them."},
-	"wisp": {"hostile": false, "hint": "WISP: a friendly light. It leads you to scrap and turns red near danger."},
+	"stalker": {"hostile": true, "hits": 4, "hint": "THE STALKER: outrun it, break away, or reach the ship."},
+	"watcher": {"hostile": true, "hits": 3, "hint": "THE WATCHER: it only moves when nobody can see it. Keep your eyes on it."},
+	"listener": {"hostile": true, "hits": 3, "hint": "THE LISTENER: it's blind and hunts by sound. Don't sprint. Stand still to hide."},
+	"mimic": {"hostile": true, "hits": 1, "hint": "A MIMIC: it looks like scrap. Real scrap shows a pick-up prompt. This didn't."},
+	"gas": {"hostile": true, "hits": 0, "hint": "TOXIC VENT: it opens and closes. Wait until it's clear, then cross."},
+	"patch": {"hostile": false, "hits": 0, "hint": "PATCH: a friendly drone. Stay close to it to heal. Its charge runs out."},
+	"sentinel": {"hostile": false, "hits": 0, "hint": "SENTINEL: a friendly pylon. Lead hunters past it and it stuns them."},
+	"wisp": {"hostile": false, "hits": 0, "hint": "WISP: a friendly light. It leads you to scrap and turns red near danger."},
 }
 
 var kind := ""
@@ -48,6 +49,7 @@ var _think_timer := 0.0
 var _attack_timer := 0.0
 var _attack_show := 0.0
 var _stun_timer := 0.0
+var _hits_taken := 0
 var _animator: AnimationPlayer
 var _last_position := Vector3.ZERO
 var _step_progress := 0.0
@@ -74,11 +76,26 @@ func is_hostile() -> bool:
 	return INFO[kind].hostile
 
 
-## Called on the host, by Sentinels.
+## Called on the host, by Sentinels and the crew's gear.
 func stun(seconds: float) -> void:
 	_stun_timer = seconds
 	net_stunned = true
 	_waypoints.clear()
+
+
+## Called on the host when a shovel lands. Each blow stuns; the last one finishes it.
+func hurt(stun_seconds: float) -> void:
+	if INFO[kind].hits <= 0:
+		return
+	_hits_taken += 1
+	if _hits_taken >= INFO[kind].hits:
+		Session.kill_entity(self)
+	else:
+		stun(stun_seconds)
+
+
+func hits_left() -> int:
+	return INFO[kind].hits - _hits_taken
 
 
 func _physics_process(delta: float) -> void:
