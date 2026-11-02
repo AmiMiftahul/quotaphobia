@@ -66,6 +66,7 @@ var _step_progress := 0.0
 var _focus_item: Scrap
 var _focus_console := false
 var _focus_terminal := false
+var _focus_gamble := false
 var _spectate_index := 0
 var _attack_show := 0.0
 
@@ -312,13 +313,14 @@ func _update_focus() -> void:
 	_focus_item = null
 	_focus_console = false
 	_focus_terminal = false
+	_focus_gamble = false
 	interact_prompt = ""
 	var carried := Session.items_held_by(peer_id)
 	var best_distance := Rules.INTERACT_RANGE
 	for item: Scrap in Session.scrap_root.get_children():
 		var distance := position.distance_to(item.position)
 		var offset := (item.position - position).normalized()
-		if item.holder_id == 0 and not item.armed and distance < best_distance and forward().dot(offset) > 0.4:
+		if item.holder_id == 0 and not item.armed and not item.locked and distance < best_distance and forward().dot(offset) > 0.4:
 			best_distance = distance
 			_focus_item = item
 	var lines := PackedStringArray()
@@ -346,6 +348,22 @@ func _update_focus() -> void:
 	elif position.distance_to(Rules.TERMINAL_POS) < Rules.INTERACT_RANGE:
 		_focus_terminal = true
 		interact_prompt = "%s: use the terminal to buy gear" % Settings.prompt_for("interact")
+	elif _focus_item == null and position.distance_to(Rules.GAMBLE_POS) < Rules.INTERACT_RANGE:
+		interact_prompt = _gamble_prompt(held)
+
+
+## What Scrap Slots offers, depending on what you're holding.
+func _gamble_prompt(held: Scrap) -> String:
+	if Session.phase != Session.Phase.PLAYING:
+		return "Scrap Slots: bring scrap back from the facility to gamble it"
+	if Session.level != null and Session.level.gamble_station.is_spinning():
+		return "Scrap Slots is spinning..."
+	if held == null:
+		return "Scrap Slots: hold a piece of scrap to gamble it"
+	if held.is_tool():
+		return "Scrap Slots only takes scrap, not gear"
+	_focus_gamble = true
+	return "%s: gamble %s. Lose it, or win up to x6" % [Settings.prompt_for("interact"), held.describe()]
 
 
 func _use_verb(item: Scrap) -> String:
@@ -385,6 +403,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			Session.request_launch.rpc_id(1)
 		elif _focus_terminal:
 			Session.terminal_requested.emit()
+		elif _focus_gamble:
+			Session.request_gamble.rpc_id(1)
 		elif _focus_item != null:
 			Session.request_pickup.rpc_id(1, _focus_item.item_id)
 	elif event.is_action_pressed("drop"):

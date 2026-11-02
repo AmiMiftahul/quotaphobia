@@ -24,6 +24,13 @@ const CONSOLE_POS := Vector3(0.0, 0.0, -13.5)
 const TERMINAL_POS := Vector3(3.7, 0.0, -11.5) # Where the crew buys gear.
 const RACK_POS := Vector3(-3.7, 0.0, -12.6) # Where bought gear appears.
 
+const GAMBLE_POS := Vector3(-3.5, 0.0, -7.2) # Scrap Slots, by the ship's door.
+const GAMBLE_SECONDS := 2.5
+const GAMBLE_MAX_VALUE := 9999
+# [chance, what the scrap's value is multiplied by]. Half the time it's gone; the rest
+# pays out, up to six times. On average a bet breaks even (a test checks this).
+const GAMBLE_TABLE := [[0.50, 0.0], [0.28, 1.5], [0.14, 2.0], [0.06, 3.0], [0.02, 6.0]]
+
 const STARTING_CREDITS := 60 # Every banked dollar of scrap also becomes a credit to spend.
 const TOOL_LIMIT := 12 # Gear the crew can own at once.
 

@@ -27,6 +27,7 @@ var charges := 0: # Zap gun shots left.
 	set(count):
 		charges = count
 		_show_charges()
+var locked := false # Inside Scrap Slots while it spins: nobody can take it.
 var armed := false: # A thrown stun grenade, about to go off.
 	set(is_armed):
 		armed = is_armed
@@ -64,7 +65,7 @@ func setup(id: int, data: Dictionary) -> void:
 		add_child(model)
 		add_glow(model)
 	charges = data.get("charges", 0)
-	NetSync.attach(self, [], [^":position", ^":holder_id", ^":stowed", ^":charges", ^":armed"])
+	NetSync.attach(self, [], [^":position", ^":holder_id", ^":stowed", ^":charges", ^":armed", ^":value", ^":locked"])
 
 
 func is_tool() -> bool:

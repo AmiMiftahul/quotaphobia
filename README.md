@@ -87,6 +87,25 @@ leaves is kept for the next day. Gear left outside is lost. A new run starts wit
 gear. Toxic vents can't be fought, and friendly helpers are never hit. Prices and numbers are
 in `scripts/tools.gd`.
 
+## Scrap Slots
+
+By the ship's door stands **Scrap Slots**. Once the ship has landed, hold a piece of scrap,
+walk up to the machine and press **E**. It takes the scrap and spins for 2.5 seconds, then:
+
+| Chance | Result |
+|---|---|
+| 50% | Bust: the scrap is gone |
+| 28% | Worth 1.5 times as much |
+| 14% | Worth 2 times as much |
+| 6% | Jackpot: 3 times |
+| 2% | Jackpot: 6 times |
+
+On average a bet breaks even, so it's a real gamble: great for a crew a little short of its goal
+on the last day, and painful when it busts. Winnings come back out on the tray and can be bet
+again, up to $9,999 for one piece of scrap. Only scrap is accepted, never gear, and only one bet
+runs at a time. The host rolls every bet, so nobody can cheat, and the whole crew sees and hears
+the result. The odds are `GAMBLE_TABLE` in `scripts/rules.gd`.
+
 ## The phone
 
 Press **P** to raise your phone. **Left click** (the same button that uses gear) takes a photo
@@ -142,6 +161,7 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/level.gd` | Turns that map into walls and lights. |
 | `scripts/player.gd`, `scrap.gd` | Players and items. |
 | `scripts/tools.gd` | The gear sold at the terminal: prices, what each piece does, and how it looks. |
+| `scripts/gamble_station.gd` | How Scrap Slots looks and spins. The betting itself is in `session.gd`. |
 | `scripts/monster.gd`, `scripts/entities/` | Every creature and helper. |
 | `scripts/map_themes.gd` | Every map's look, sound, rules and residents. |
 | `scripts/main.gd` | The title screen, menus and HUD, and the look they share. |

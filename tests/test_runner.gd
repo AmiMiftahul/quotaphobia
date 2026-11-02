@@ -38,6 +38,7 @@ func _ready() -> void:
 		"perf": await _perf()
 		"days": await _days()
 		"gear": await _gear()
+		"slots": await _slots()
 		"late": await _late()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
@@ -273,6 +274,18 @@ func _unit() -> void:
 	check("at full strength no single hit kills a healthy player", roundi(maxi(Rules.MONSTER_DAMAGE, maxi(Watcher.DAMAGE, Listener.DAMAGE)) * top.damage) < Rules.PLAYER_MAX_HP)
 	check("at full strength stuns still last", top.stun >= 0.6)
 	check("a shovel never stun-locks: each hit wears off before the next swing", Tools.SHOVEL_STUN < Tools.SHOVEL_COOLDOWN)
+
+	# Scrap Slots: the odds add up, and on average a bet breaks even.
+	var total_chance := 0.0
+	var average := 0.0
+	var biggest := 0.0
+	for row: Array in Rules.GAMBLE_TABLE:
+		total_chance += row[0]
+		average += row[0] * row[1]
+		biggest = maxf(biggest, row[1])
+	check("the slot odds add up to 100%%", is_equal_approx(total_chance, 1.0))
+	check("a slot bet breaks even on average (%.3f)" % average, absf(average - 1.0) < 0.01)
+	check("the slots can bust or pay six times over", Rules.GAMBLE_TABLE[0][1] == 0.0 and biggest == 6.0)
 	await wait(0.01)
 
 
@@ -827,6 +840,29 @@ func _ui() -> void:
 	await wait(0.2)
 	await _press(KEY_G)
 	await until(func() -> bool: return shovel.holder_id == 0, 2.0)
+
+	# Scrap Slots, with the real E key.
+	var chip: Scrap = free_items_outside_ship()[0]
+	me().rotation.y = 0.0
+	me().teleport(Vector3(chip.position.x, 0.1, chip.position.z + 1.5))
+	await wait(0.3)
+	await _press(KEY_E)
+	await until(func() -> bool: return chip.holder_id == 1, 2.0)
+	var chip_value := chip.value
+	me().rotation.y = PI * 0.5
+	me().teleport(Vector3(Rules.GAMBLE_POS.x + 1.9, 0.1, Rules.GAMBLE_POS.z))
+	await wait(0.3)
+	check("Scrap Slots offers a bet", me().interact_prompt.begins_with("E: gamble"))
+	await _shot("10_slots")
+	Session.gamble_rig = 3
+	await _press(KEY_E)
+	check("E feeds the scrap to the machine", await until(func() -> bool: return chip.locked, 2.0))
+	await wait(0.6)
+	await _shot("10b_slots_spinning")
+	check("the machine pays out on screen", await until(func() -> bool: return not chip.locked, 5.0) and chip.value == chip_value * 3)
+	await wait(0.2)
+	await _shot("10c_slots_jackpot")
+	Session.gamble_rig = -1
 
 	# Pause menu.
 	await _press(KEY_ESCAPE)
@@ -2307,6 +2343,27 @@ func _scenario_orbit() -> void:
 	print("FACILITY_R3 %d" % Session.layout.fingerprint())
 	await barrier("landed", 4)
 
+	# Scrap Slots: a player gambles, and everyone sees the same result.
+	var bet: Scrap = item(1)
+	var stake := bet.value
+	if role == "host":
+		Session.gamble_rig = 2 # A x2 win, so the outcome is known.
+	await barrier("rigged", 4)
+	if idx == 1:
+		me().teleport(Vector3(bet.position.x, 0.1, bet.position.z))
+		await wait(0.3)
+		Session.request_pickup.rpc_id(1, bet.item_id)
+		await until(func() -> bool: return bet.holder_id == bot1, 3.0)
+		me().rotation.y = PI * 0.5
+		me().teleport(Vector3(Rules.GAMBLE_POS.x + 1.9, 0.1, Rules.GAMBLE_POS.z))
+		await wait(0.3)
+		Session.request_gamble.rpc_id(1)
+	check("everyone sees the scrap go into the machine", await until(func() -> bool: return bet.locked and bet.holder_id == 0, 5.0))
+	check("everyone sees the reels spin", await until(func() -> bool: return "spin" in _effects, 3.0))
+	check("everyone sees the win", await until(func() -> bool: return bet.value == stake * 2 and not bet.locked, 6.0))
+	check("everyone hears the win", await until(func() -> bool: return "win" in _effects, 3.0))
+	await barrier("gambled", 4)
+
 
 # --- The crew's gear, against every kind of creature --------------------------------
 
@@ -2610,4 +2667,120 @@ func _gear() -> void:
 	check("the last day's failure ends the run", Session.phase == Session.Phase.GAME_OVER)
 	check("a new run starts in orbit", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0))
 	check("a new run has fresh credits and no gear", Session.credits == Rules.STARTING_CREDITS and Session.gear_count() == 0)
+	Net.leave()
+
+
+# --- Scrap Slots: put scrap in, lose it or win big ----------------------------------
+
+func _slots() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.goal_override = 5000
+	Session.results_seconds = 0.7
+	Session.open_ship()
+	await until(func() -> bool: return Session.phase == Session.Phase.ORBIT and me() != null, 3.0)
+	check("Scrap Slots is in the ship", Session.level.gamble_station != null and Rules.in_ship(Rules.GAMBLE_POS) and Rules.in_ship(Session.gamble_tray()))
+	var at_machine := Vector3(Rules.GAMBLE_POS.x + 1.9, 0.1, Rules.GAMBLE_POS.z)
+	me().rotation.y = PI * 0.5
+	me().teleport(at_machine)
+	await wait(0.1)
+	check("in orbit the machine asks for scrap from the facility", me().interact_prompt.contains("bring scrap back"))
+	Session.start_run()
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING, 3.0)
+	await wait(0.1)
+	check("the machine is in the ship on the ground too", Session.level.gamble_station != null)
+	check("with empty hands it says what it wants", me().interact_prompt.contains("hold a piece of scrap"))
+
+	# Too far away, nothing happens.
+	var bet := item(1)
+	var stake := bet.value
+	bet.holder_id = 1
+	me().teleport(Vector3(0, 0.1, -12.0))
+	await wait(0.1)
+	Session.request_gamble.rpc_id(1)
+	check("you can't gamble from across the ship", bet.holder_id == 1 and not bet.locked)
+	me().rotation.y = PI * 0.5
+	me().teleport(at_machine)
+	await wait(0.1)
+	check("the machine offers the bet", me().interact_prompt.begins_with("E: gamble %s" % bet.kind))
+
+	# A x2 win.
+	Session.gamble_rig = 2
+	var started := Time.get_ticks_msec()
+	Session.request_gamble.rpc_id(1)
+	check("the machine takes the scrap from your hands", bet.holder_id == 0 and bet.locked and Session.item_held_by(1) == null)
+	check("the scrap waits on the machine's tray", bet.position.distance_to(Session.gamble_tray()) < 0.01)
+	check("the reels spin", "spin" in _effects and Session.level.gamble_station.is_spinning())
+	Session.request_pickup.rpc_id(1, bet.item_id)
+	check("scrap in the machine can't be grabbed back", bet.holder_id == 0 and bet.locked)
+	var second := item(2)
+	second.holder_id = 1
+	Session.request_gamble.rpc_id(1)
+	check("one bet at a time", second.holder_id == 1 and not second.locked)
+	await wait(0.2)
+	check("the prompt says it's busy", me().interact_prompt.contains("spinning"))
+	check("the result waits for the spin", bet.value == stake)
+	await until(func() -> bool: return not bet.locked, 5.0)
+	var seconds := (Time.get_ticks_msec() - started) / 1000.0
+	check("a spin takes about %.1f seconds (%.2f)" % [Rules.GAMBLE_SECONDS, seconds], seconds > Rules.GAMBLE_SECONDS - 0.1 and seconds < Rules.GAMBLE_SECONDS + 0.5)
+	check("a win multiplies the scrap's value", bet.value == stake * 2 and "win" in _effects)
+	check("winnings come back out on the tray, in the ship", Rules.in_ship(bet.position) and bet.get_parent() == Session.scrap_root)
+	check("winnings count toward the goal", Session._ship_value() >= bet.value)
+	await wait(0.1)
+	check("the won scrap can be picked up", me().interact_prompt.contains("pick up %s" % bet.kind))
+
+	# A bust.
+	Session.gamble_rig = 0
+	Session.request_gamble.rpc_id(1)
+	check("a bust destroys the scrap", await until(func() -> bool: return item(2) == null, 5.0) and "bust" in _effects)
+
+	# A jackpot, and the ceiling on value.
+	Session.gamble_rig = 4
+	Session.request_pickup.rpc_id(1, bet.item_id)
+	var doubled := bet.value
+	Session.request_gamble.rpc_id(1)
+	await until(func() -> bool: return not bet.locked, 5.0)
+	check("a jackpot pays six times", bet.value == mini(doubled * 6, Rules.GAMBLE_MAX_VALUE) and "jackpot" in _effects)
+	bet.value = 5000
+	Session.request_pickup.rpc_id(1, bet.item_id)
+	Session.request_gamble.rpc_id(1)
+	await until(func() -> bool: return not bet.locked, 5.0)
+	check("no scrap can be worth more than $%d" % Rules.GAMBLE_MAX_VALUE, bet.value == Rules.GAMBLE_MAX_VALUE)
+
+	# Gear isn't accepted. (The scrap on the tray moves aside, so its pick-up prompt doesn't win.)
+	bet.position = Vector3(0, Scrap.FLOOR_HEIGHT, -12.0)
+	var shovel := _give(Tools.SHOVEL)
+	await wait(0.1)
+	check("the machine says it only takes scrap", me().interact_prompt.contains("only takes scrap"))
+	Session.request_gamble.rpc_id(1)
+	check("gear can't be gambled", shovel.holder_id == 1 and not shovel.locked)
+
+	# The real odds, over many spins.
+	Session.gamble_rig = -1
+	var busts := 0
+	var paid := 0.0
+	var spins := 20000
+	var seen := {}
+	for spin in spins:
+		var multiplier := Session._roll_gamble()
+		seen[multiplier] = true
+		paid += multiplier
+		if multiplier == 0.0:
+			busts += 1
+	check("about half of all bets bust (%.3f)" % (float(busts) / spins), absf(float(busts) / spins - 0.5) < 0.02)
+	check("bets break even over many spins (%.3f)" % (paid / spins), absf(paid / spins - 1.0) < 0.06)
+	check("every outcome really happens", seen.size() == Rules.GAMBLE_TABLE.size())
+
+	# The day ending mid-spin breaks nothing.
+	var last := item(3)
+	last.holder_id = 1
+	for other in Session.items_held_by(1):
+		other.stowed = other != last
+	Session.request_gamble.rpc_id(1)
+	check("a bet can start right before take-off", last.locked)
+	Session._end_round()
+	check("the day ends cleanly mid-spin", Session.phase == Session.Phase.RESULTS)
+	check("the ship returns to orbit afterwards", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0))
+	check("the machine is idle again in orbit", not Session.level.gamble_station.is_spinning() and not Session.gamble_busy())
 	Net.leave()

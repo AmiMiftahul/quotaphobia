@@ -21,6 +21,7 @@ var _flicker_lights: Array[OmniLight3D] = []
 var _flicker_time := 0.0
 var _theme: Dictionary
 var environment: Environment
+var gamble_station: GambleStation
 var _ambience_timer := AMBIENCE_MIN_SECONDS
 var _ambience_cells: Array[Vector2i] = []
 
@@ -100,6 +101,10 @@ func _add_ship_fittings() -> void:
 	var wall_x := FacilityLayout.CELL * 0.5 - WALL_THICKNESS * 0.5 - 0.02
 	_add_sign("TERMINAL", Vector3(wall_x, 2.7, Rules.TERMINAL_POS.z), -PI * 0.5, Color(0.5, 1.0, 0.65))
 	_add_sign("GEAR RACK", Vector3(-wall_x, 2.7, Rules.RACK_POS.z + 1.2), PI * 0.5, Color(0.5, 0.85, 1.0))
+	# Scrap Slots, by the door, facing into the ship.
+	_add_prop(Assets.FACTORY % "machine", Rules.GAMBLE_POS, PI * 0.5, 1.0)
+	gamble_station = GambleStation.new()
+	add_child(gamble_station)
 	add_child(Sfx.make_ship_hum(ship_center + Vector3(0, 2, 0)))
 
 

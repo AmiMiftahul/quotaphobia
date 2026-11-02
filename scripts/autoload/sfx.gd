@@ -30,6 +30,7 @@ const BANKS := {
 	"boom": ["lowFrequency_explosion", 0, 1],
 	"buy": ["confirmation", 1, 4],
 	"deny": ["error", 1, 8],
+	"jackpot": ["confirmation", 1, 4],
 	"amb_foundry": ["impactMetal_heavy", 0, 4],
 	"amb_cryo": ["glass", 1, 6],
 	"amb_biolab": ["slime", 0, 1],

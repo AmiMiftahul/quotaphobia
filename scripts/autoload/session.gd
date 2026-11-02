@@ -53,6 +53,7 @@ var entities_enabled := true
 var forced_maps: Array[String] = [] # Tests pick maps instead of the random order.
 var goal_override := 0 # Tests can set a level's goal directly.
 var land_automatically := false # Tests can skip waiting in orbit between days.
+var gamble_rig := -1 # Tests can pick a row of Rules.GAMBLE_TABLE instead of rolling.
 
 var _run_seed := 0
 var _crew_size := 1
@@ -70,6 +71,8 @@ var _ready_at := {} # Host: peer -> time (ms) they may use gear again.
 var _pending_uses: Array[int] = [] # Host: peers waiting for the next physics step.
 var _fuses := {} # Host: armed grenade -> seconds until it goes off.
 var _blast_to_check := Vector3.INF # Where a grenade went off, to test against this player's view.
+var _gamble_item: Scrap # Host: the scrap inside Scrap Slots right now.
+var _gamble_left := 0.0
 
 
 func _ready() -> void:
@@ -338,6 +341,10 @@ func _process(delta: float) -> void:
 			if _tick_timer <= 0.0:
 				_tick_timer = 1.0
 				_rpc_tick.rpc(time_left, _ship_value())
+			if _gamble_item != null:
+				_gamble_left -= delta
+				if _gamble_left <= 0.0:
+					_finish_gamble()
 			if time_left <= 0.0:
 				_end_round()
 		Phase.RESULTS, Phase.GAME_OVER:
@@ -464,6 +471,7 @@ func _keep_gear_in_ship() -> void:
 
 func _clear_entities() -> void:
 	_fuses.clear()
+	_gamble_item = null
 	for root: Node3D in [players_root, scrap_root, entity_root]:
 		for child in root.get_children():
 			root.remove_child(child)
@@ -586,7 +594,7 @@ func request_pickup(item_id: int) -> void:
 	if node == null or item == null or not is_player_alive(peer):
 		return
 	var carried := items_held_by(peer)
-	if item.holder_id != 0 or item.armed or carried.size() >= Rules.CARRY_LIMIT:
+	if item.holder_id != 0 or item.armed or item.locked or carried.size() >= Rules.CARRY_LIMIT:
 		return
 	if node.net_pos.distance_to(item.position) > Rules.SERVER_RANGE:
 		return
@@ -644,6 +652,63 @@ func request_launch() -> void:
 		_begin_round(round_number + 1)
 	else:
 		_end_round()
+
+
+## Feeding the scrap in your hands to Scrap Slots.
+@rpc("any_peer", "call_local", "reliable")
+func request_gamble() -> void:
+	if not multiplayer.is_server() or phase != Phase.PLAYING:
+		return
+	var peer := multiplayer.get_remote_sender_id()
+	var node := player_node(peer)
+	var item := item_held_by(peer)
+	if node == null or item == null or item.is_tool() or not is_player_alive(peer):
+		return
+	if node.net_pos.distance_to(Rules.GAMBLE_POS) > Rules.SERVER_RANGE or gamble_busy():
+		return
+	_drop_hand_item(peer)
+	# It sits on the machine's tray, locked in, while the reels spin.
+	item.position = gamble_tray()
+	item.locked = true
+	_gamble_item = item
+	_gamble_left = Rules.GAMBLE_SECONDS
+	_rpc_gamble_spin.rpc()
+
+
+func gamble_busy() -> bool:
+	return _gamble_item != null and is_instance_valid(_gamble_item)
+
+
+## Where scrap waits in front of the machine, and where winnings come back out.
+func gamble_tray() -> Vector3:
+	return Vector3(Rules.GAMBLE_POS.x + 1.05, Scrap.FLOOR_HEIGHT, Rules.GAMBLE_POS.z)
+
+
+func _finish_gamble() -> void:
+	var item := _gamble_item
+	_gamble_item = null
+	if not is_instance_valid(item) or item.get_parent() != scrap_root:
+		return
+	var multiplier := _roll_gamble()
+	if multiplier <= 0.0:
+		_rpc_gamble_result.rpc(0.0, 0)
+		scrap_root.remove_child(item)
+		item.queue_free()
+		return
+	item.value = mini(roundi(item.value * multiplier), Rules.GAMBLE_MAX_VALUE)
+	item.locked = false
+	_rpc_gamble_result.rpc(multiplier, item.value)
+
+
+func _roll_gamble() -> float:
+	if gamble_rig >= 0:
+		return Rules.GAMBLE_TABLE[gamble_rig][1]
+	var roll := randf()
+	for row: Array in Rules.GAMBLE_TABLE:
+		roll -= row[0]
+		if roll < 0.0:
+			return row[1]
+	return Rules.GAMBLE_TABLE.back()[1]
 
 
 ## Buying gear at the terminal, with the crew's shared credits.
@@ -769,6 +834,30 @@ func _rpc_forget_player(peer: int) -> void:
 func _rpc_shop_reply(ok: bool, message: String) -> void:
 	Sfx.play_2d("buy" if ok else "deny", -8.0)
 	shop_replied.emit(ok, message)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_gamble_spin() -> void:
+	Sfx.play_3d("switch", Rules.GAMBLE_POS, 0.0, 16.0)
+	if level != null:
+		level.gamble_station.spin()
+	effect_played.emit("spin", Rules.GAMBLE_POS)
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_gamble_result(multiplier: float, value: int) -> void:
+	if level != null:
+		level.gamble_station.show_result(multiplier, value)
+	var kind := "bust" if multiplier <= 0.0 else ("jackpot" if multiplier >= 3.0 else "win")
+	match kind:
+		"bust":
+			Sfx.play_3d("lose", Rules.GAMBLE_POS, 0.0, 20.0)
+		"win":
+			Sfx.play_3d("win", Rules.GAMBLE_POS, 0.0, 20.0)
+		"jackpot":
+			Sfx.play_3d("jackpot", Rules.GAMBLE_POS, 6.0, 30.0)
+			_flash(Rules.GAMBLE_POS + Vector3(1.0, 2.0, 0), Color(1.0, 0.85, 0.3), 8.0)
+	effect_played.emit(kind, Rules.GAMBLE_POS)
 
 
 ## Sounds and flashes for what the crew's gear just did, on every machine.
