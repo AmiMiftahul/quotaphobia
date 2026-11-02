@@ -28,6 +28,34 @@ To play with someone on your home network, type the host's local IP address into
 join box. Over the internet this version needs the host to forward UDP port 24567. Step 6
 below replaces that with Steam invites.
 
+## Maps and creatures
+
+Each run visits the four maps in a random order, and threats grow as rounds pass. To change
+a map, or add one, edit `scripts/map_themes.gd`.
+
+| Map | Vibe | Its rule | Who's there |
+|---|---|---|---|
+| Rust Foundry | Hot orange light, heavy machines | Lots of side routes | Stalker, Mimics, Sentinels |
+| Cryo Vault | Thick pale-blue fog | Stamina recovers at half speed | Watchers, Patch |
+| Bio Lab | Sickly green, failing lights | Tight corridors, few loops | Stalker, toxic vents, Mimic, Patch |
+| Blackout Reactor | Near-black, red alarm pulses | Scrap worth 30% more | Listeners, Watcher, Wisp, Sentinel |
+
+| Threat | What it does | How to beat it |
+|---|---|---|
+| Stalker | Patrols, spots you and runs you down | Sprint away, or reach the ship |
+| Watcher | Moves only when nobody can see it | Keep someone's eyes on it |
+| Listener | Blind; rushes toward noise | Walk or stand still; never sprint nearby |
+| Mimic | Looks like scrap, bites when you get close | Real scrap shows a pick-up prompt |
+| Toxic vent | Fills a room with gas on a timer | Wait for it to close, then cross |
+
+| Helper | What it does |
+|---|---|
+| Patch | A drone that flies to hurt players and heals them, with limited charge |
+| Sentinel | A pylon that stuns the nearest hunter it can see, then recharges |
+| Wisp | A light that leads you toward scrap and turns red near hunters |
+
+The ship is always safe. The first time you meet each one, the HUD explains it.
+
 ## How the work flows
 
 **1. How the game is organised.** One player is the host, and their game is the referee.
@@ -41,7 +69,9 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/autoload/session.gd` | Round flow, and checking every player request. |
 | `scripts/facility_layout.gd` | Generates the map from a seed, so the host only sends one number. |
 | `scripts/level.gd` | Turns that map into walls and lights. |
-| `scripts/player.gd`, `monster.gd`, `scrap.gd` | The things in the world. |
+| `scripts/player.gd`, `scrap.gd` | Players and items. |
+| `scripts/monster.gd`, `scripts/entities/` | Every creature and helper. |
+| `scripts/map_themes.gd` | Every map's look, sound, rules and residents. |
 | `scripts/main.gd` | Menus and HUD. |
 | `scripts/autoload/sfx.gd` | Every sound, and how loud it plays. |
 | `scripts/autoload/store.gd` | The in-game shop. |

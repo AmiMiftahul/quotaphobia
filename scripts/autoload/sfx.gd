@@ -17,6 +17,18 @@ const BANKS := {
 	"switch": ["switch", 1, 7],
 	"win": ["confirmation", 1, 4],
 	"lose": ["error", 1, 8],
+	"stun": ["forceField", 0, 4],
+	"gas": ["slime", 0, 1],
+	"heal": ["glass", 1, 6],
+	"wisp_warn": ["tick", 1, 2],
+	"watcher_step": ["scratch", 1, 5],
+	"listener_call": ["glitch", 1, 4],
+	"mimic_bite": ["impactPunch_medium", 0, 4],
+	"hint": ["pluck", 1, 2],
+	"amb_foundry": ["impactMetal_heavy", 0, 4],
+	"amb_cryo": ["glass", 1, 6],
+	"amb_biolab": ["slime", 0, 1],
+	"amb_reactor": ["engineCircular", 0, 4],
 }
 const AMBIENT_PATH := "res://assets/audio/ambient_hum.wav"
 const SHIP_HUM_PATH := "res://assets/audio/spaceEngineLow_000.ogg"
@@ -76,7 +88,8 @@ func play_3d(bank: String, pos: Vector3, volume_db: float = 0.0, max_distance: f
 	player.play()
 
 
-func set_ambient(on: bool) -> void:
+func set_ambient(on: bool, pitch: float = 1.0) -> void:
+	_ambient.pitch_scale = pitch
 	if on and not _ambient.playing:
 		if not _silent:
 			_ambient.play()

@@ -10,16 +10,23 @@ const DOOR_WIDTH := 2.8 # The clear opening of the gate model.
 const DOOR_HEIGHT := 3.6
 const GATE_WIDTH := 4.2
 
-const FACILITY_TINT := Color(0.6, 0.58, 0.62)
 const SHIP_TINT := Color(1.0, 1.0, 1.0)
+const CEILING_SHADE := Color(0.7, 0.7, 0.7)
+const AMBIENCE_MIN_SECONDS := 6.0
+const AMBIENCE_MAX_SECONDS := 16.0
 
 var _body: StaticBody3D
 var _batches := {} # [path, tint] -> Array[Transform3D]
 var _flicker_lights: Array[OmniLight3D] = []
 var _flicker_time := 0.0
+var _theme: Dictionary
+var _ambience_timer := AMBIENCE_MIN_SECONDS
+var _ambience_cells: Array[Vector2i] = []
 
 
 func build(layout: FacilityLayout) -> void:
+	_theme = layout.theme
+	_ambience_cells = layout.all_cells()
 	_body = StaticBody3D.new()
 	add_child(_body)
 	_add_environment()
@@ -36,7 +43,8 @@ func build(layout: FacilityLayout) -> void:
 	cells.append(FacilityLayout.SHIP_CELL)
 	var done := {}
 	for cell in cells:
-		_add_floor_and_ceiling(cell, SHIP_TINT if cell == FacilityLayout.SHIP_CELL else FACILITY_TINT)
+		var is_ship: bool = cell == FacilityLayout.SHIP_CELL
+		_add_floor_and_ceiling(cell, SHIP_TINT if is_ship else _theme.wall_tint, SHIP_TINT * CEILING_SHADE if is_ship else _theme.ceiling_tint)
 		for dir in FacilityLayout.DIRS:
 			var other: Vector2i = cell + dir
 			var key := Vector4i(mini(cell.x, other.x), mini(cell.y, other.y), maxi(cell.x, other.x), maxi(cell.y, other.y))
@@ -48,10 +56,10 @@ func build(layout: FacilityLayout) -> void:
 	for prop: Dictionary in layout.props:
 		_add_prop(Assets.FACTORY % prop.model, prop.pos, prop.turns * PI * 0.5, prop.scale)
 	for pos: Vector3 in layout.floor_details:
-		_place(Assets.SPACE % "cables", Transform3D(Basis.IDENTITY, pos), FACILITY_TINT)
+		_place(Assets.SPACE % "cables", Transform3D(Basis.IDENTITY, pos), _theme.wall_tint)
 
 	for cell in layout.light_cells:
-		_add_light(FacilityLayout.cell_center(cell) + Vector3(0, WALL_HEIGHT - 0.4, 0), Color(1.0, 0.72, 0.45), 0.9, 8.0, true)
+		_add_light(FacilityLayout.cell_center(cell) + Vector3(0, WALL_HEIGHT - 0.4, 0), _theme.light_color, _theme.light_energy, 8.0, _theme.flicker > 0.0 or _theme.pulse)
 	_add_light(ship_center + Vector3(0, WALL_HEIGHT - 0.4, 0), Color(0.85, 0.95, 1.0), 1.5, 12.0, false)
 
 	# The launch console, with warning lights on each side.
@@ -65,12 +73,24 @@ func build(layout: FacilityLayout) -> void:
 func _process(delta: float) -> void:
 	_flicker_time += delta
 	for index in _flicker_lights.size():
-		var seed_time := _flicker_time * 7.0 + index * 13.7
-		var dip := 0.25 if sin(seed_time) * sin(seed_time * 0.37) > 0.82 else 1.0
-		_flicker_lights[index].light_energy = 0.9 * dip
+		var level := 1.0
+		if _theme.pulse:
+			# A slow alarm sweep that goes nearly dark between beats.
+			level = 0.06 + 0.94 * pow(0.5 + 0.5 * sin(_flicker_time * 2.2 + index * 0.6), 2.0)
+		else:
+			var seed_time := _flicker_time * 7.0 + index * 13.7
+			# More flicker means the light drops out more often.
+			if sin(seed_time) * sin(seed_time * 0.37) > 1.0 - _theme.flicker * 0.7:
+				level = 0.2
+		_flicker_lights[index].light_energy = _theme.light_energy * level
+	_ambience_timer -= delta
+	if _ambience_timer <= 0.0:
+		_ambience_timer = randf_range(AMBIENCE_MIN_SECONDS, AMBIENCE_MAX_SECONDS)
+		var room := _ambience_cells[randi() % _ambience_cells.size()]
+		Sfx.play_3d(_theme.ambience, FacilityLayout.cell_center(room) + Vector3(0, 2, 0), -6.0, 45.0)
 
 
-func _add_floor_and_ceiling(cell: Vector2i, tint: Color) -> void:
+func _add_floor_and_ceiling(cell: Vector2i, tint: Color, ceiling_tint: Color) -> void:
 	var center := FacilityLayout.cell_center(cell)
 	var scale_basis := Basis.from_scale(Vector3(1.25, 1.0, 1.25))
 	var upside_down := Basis(Vector3.RIGHT, PI) * scale_basis
@@ -78,7 +98,7 @@ func _add_floor_and_ceiling(cell: Vector2i, tint: Color) -> void:
 		for z: float in [-2.5, 2.5]:
 			var pos := center + Vector3(x, 0, z)
 			_place(Assets.SPACE % "template-floor", Transform3D(scale_basis, pos), tint)
-			_place(Assets.SPACE % "template-floor", Transform3D(upside_down, pos + Vector3(0, WALL_HEIGHT, 0)), tint * Color(0.7, 0.7, 0.7))
+			_place(Assets.SPACE % "template-floor", Transform3D(upside_down, pos + Vector3(0, WALL_HEIGHT, 0)), ceiling_tint)
 
 
 func _add_wall(layout: FacilityLayout, cell: Vector2i, dir: Vector2i) -> void:
@@ -108,7 +128,7 @@ func _add_wall(layout: FacilityLayout, cell: Vector2i, dir: Vector2i) -> void:
 	if has_door:
 		var ship_door: bool = cell == FacilityLayout.SHIP_CELL or other == FacilityLayout.SHIP_CELL
 		var turn := Basis.IDENTITY if along_x else Basis(Vector3.UP, PI * 0.5)
-		_place(Assets.SPACE % "gate", Transform3D(turn, line), SHIP_TINT if ship_door else FACILITY_TINT)
+		_place(Assets.SPACE % "gate", Transform3D(turn, line), SHIP_TINT if ship_door else _theme.wall_tint)
 
 
 func _add_wall_face(line: Vector3, axis: Vector3, facing: Vector3, has_door: bool, tint: Color) -> void:
@@ -127,7 +147,7 @@ func _add_wall_face(line: Vector3, axis: Vector3, facing: Vector3, has_door: boo
 
 
 func _tint_for(cell: Vector2i) -> Color:
-	return SHIP_TINT if cell == FacilityLayout.SHIP_CELL else FACILITY_TINT
+	return SHIP_TINT if cell == FacilityLayout.SHIP_CELL else _theme.wall_tint
 
 
 func _add_prop(path: String, pos: Vector3, angle: float, prop_scale: float) -> void:
@@ -207,11 +227,11 @@ func _add_environment() -> void:
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color.BLACK
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.5, 0.55, 0.7)
-	env.ambient_light_energy = 0.12
+	env.ambient_light_color = _theme.ambient_color
+	env.ambient_light_energy = _theme.ambient_energy
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.02, 0.02, 0.03)
-	env.fog_density = 0.03
+	env.fog_light_color = _theme.fog_color
+	env.fog_density = _theme.fog_density
 	var world_env := WorldEnvironment.new()
 	world_env.environment = env
 	add_child(world_env)

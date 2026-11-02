@@ -14,6 +14,8 @@ var _board_label: Label
 var _lobby_list: Label
 var _start_button: Button
 var _top_label: Label
+var _banner_label: Label
+var _hint_label: Label
 var _prompt_label: Label
 var _crosshair: Label
 var _health_bar: ProgressBar
@@ -57,8 +59,13 @@ func _process(_delta: float) -> void:
 	if not _hud.visible:
 		return
 	var seconds := int(ceil(Session.time_left))
-	_top_label.text = "Round %d    Time %d:%02d    In ship $%d / quota $%d" % [
-		Session.round_number, seconds / 60, seconds % 60, Session.in_ship_value, Session.quota]
+	var theme: Dictionary = MapThemes.get_theme(Session.map_id)
+	_top_label.text = "%s    Round %d    Time %d:%02d    In ship $%d / quota $%d" % [
+		theme.name, Session.round_number, seconds / 60, seconds % 60, Session.in_ship_value, Session.quota]
+	_banner_label.visible = Session.banner_seconds > 0.0
+	_banner_label.text = "%s\n%s\n%s" % [theme.name.to_upper(), theme.tagline, theme.rule]
+	_hint_label.visible = Session.hint_seconds > 0.0
+	_hint_label.text = Session.hint_text
 	var player := Session.player_node(Net.my_id())
 	if player != null:
 		_prompt_label.text = player.interact_prompt
@@ -305,6 +312,22 @@ func _build_hud() -> void:
 	_prompt_label.anchor_right = 1.0
 	_prompt_label.anchor_top = 0.58
 	_prompt_label.anchor_bottom = 0.58
+	_banner_label = _label(_hud, "", 24)
+	_banner_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_banner_label.anchor_right = 1.0
+	_banner_label.anchor_top = 0.14
+	_banner_label.anchor_bottom = 0.14
+	_hint_label = _label(_hud, "", 20)
+	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hint_label.anchor_left = 0.15
+	_hint_label.anchor_right = 0.85
+	_hint_label.anchor_top = 0.72
+	_hint_label.anchor_bottom = 0.72
+	_hint_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	_hint_label.add_theme_constant_override("outline_size", 6)
+	_hint_label.add_theme_color_override("font_outline_color", Color.BLACK)
+	_banner_label.add_theme_constant_override("outline_size", 6)
+	_banner_label.add_theme_color_override("font_outline_color", Color.BLACK)
 	_crosshair = _label(_hud, "+", 20)
 	_crosshair.autowrap_mode = TextServer.AUTOWRAP_OFF
 	_crosshair.set_anchors_and_offsets_preset(Control.PRESET_CENTER)

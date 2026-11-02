@@ -16,40 +16,38 @@ const SCRAP_MODELS := {
 	"Valve pipe": "pipe-large-valve",
 	"Spare lever": "lever-single",
 }
-const PROP_MODELS := {
-	"machine": 1.3,
-	"machine-fortified": 1.2,
-	"hopper-round": 1.5,
-	"box-large": 1.6,
-	"robot-arm-a": 1.0,
-	"pipe-large": 1.4,
-	"screen-wide": 1.3,
-}
 const PROP_CORNER := 3.2 # Props sit in room corners, clear of doors and walkways.
 const SCRAP_CLEARANCE := 2.2 # Scrap never lands where a prop could be.
+const MIN_ENTITY_ROOMS := 3 # Route length from the entry, so nothing starts on top of the crew.
 
 var size := 0
+var map_id := "foundry"
+var theme: Dictionary
 var monster_spawn := Vector2i.ZERO
 var light_cells: Array[Vector2i] = []
 var scrap_spawns: Array[Dictionary] = []
 var props: Array[Dictionary] = []
 var floor_details: Array[Vector3] = []
+var entity_spawns: Array[Dictionary] = []
 var _open := {}
 var _rng := RandomNumberGenerator.new()
 
 
-func _init(seed_value: int, grid_size: int, round_number: int, required_value: int) -> void:
+func _init(seed_value: int, grid_size: int, round_number: int, required_value: int, map: String = "foundry") -> void:
 	_rng.seed = seed_value
 	size = grid_size
+	map_id = map
+	theme = MapThemes.get_theme(map)
 	_carve_maze()
 	_add_loops()
 	_open[_edge_key(SHIP_CELL, ENTRY_CELL)] = true
 	monster_spawn = _farthest_cell_from_entry()
 	for cell in all_cells():
-		if _rng.randf() < 0.35:
+		if _rng.randf() < theme.light_chance:
 			light_cells.append(cell)
 	_place_props()
 	_place_scrap(round_number, required_value)
+	_place_entities(round_number)
 
 
 func has_cell(cell: Vector2i) -> bool:
@@ -112,7 +110,10 @@ func fingerprint() -> int:
 	var prop_data: Array = []
 	for prop in props:
 		prop_data.append([prop.model, prop.pos, prop.turns])
-	return hash([size, edges, scrap, monster_spawn, prop_data])
+	var entities: Array = []
+	for entity in entity_spawns:
+		entities.append([entity.kind, entity.pos])
+	return hash([map_id, size, edges, scrap, monster_spawn, prop_data, entities])
 
 
 func _edge_key(a: Vector2i, b: Vector2i) -> Vector4i:
@@ -145,7 +146,7 @@ func _add_loops() -> void:
 	for cell in all_cells():
 		for dir: Vector2i in [Vector2i(1, 0), Vector2i(0, 1)]:
 			var next: Vector2i = cell + dir
-			if has_cell(next) and not is_open(cell, next) and _rng.randf() < 0.15:
+			if has_cell(next) and not is_open(cell, next) and _rng.randf() < theme.loop_chance:
 				_open[_edge_key(cell, next)] = true
 
 
@@ -161,21 +162,29 @@ func _farthest_cell_from_entry() -> Vector2i:
 
 
 func _place_props() -> void:
-	var names: Array = PROP_MODELS.keys()
+	var names: Array = theme.props.keys()
 	for cell in all_cells():
 		if cell == ENTRY_CELL:
 			continue
 		for corner: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
-			if _rng.randf() < 0.45:
+			if _rng.randf() < theme.prop_chance:
 				var model: String = names[_rng.randi_range(0, names.size() - 1)]
 				props.append({
 					"model": model,
-					"scale": PROP_MODELS[model],
+					"scale": theme.props[model],
 					"pos": cell_center(cell) + Vector3(corner.x, 0, corner.y) * PROP_CORNER,
 					"turns": _rng.randi_range(0, 3),
 				})
 		if _rng.randf() < 0.3:
 			floor_details.append(cell_center(cell) + Vector3(_rng.randf_range(-2.0, 2.0), 0.01, _rng.randf_range(-2.0, 2.0)))
+
+
+func _random_room_offset() -> Vector3:
+	while true:
+		var offset := Vector3(_rng.randf_range(-3.5, 3.5), 0.25, _rng.randf_range(-3.5, 3.5))
+		if absf(offset.x) <= SCRAP_CLEARANCE or absf(offset.z) <= SCRAP_CLEARANCE:
+			return offset
+	return Vector3.ZERO
 
 
 func _place_scrap(round_number: int, required_value: int) -> void:
@@ -187,14 +196,47 @@ func _place_scrap(round_number: int, required_value: int) -> void:
 		var cell := ENTRY_CELL
 		while cell == ENTRY_CELL:
 			cell = Vector2i(_rng.randi_range(0, size - 1), _rng.randi_range(0, size - 1))
-		var offset := Vector3(_rng.randf_range(-3.5, 3.5), 0.25, _rng.randf_range(-3.5, 3.5))
-		if absf(offset.x) > SCRAP_CLEARANCE and absf(offset.z) > SCRAP_CLEARANCE:
-			continue
-		var value := int(_rng.randi_range(15, 60) * (1.0 + 0.1 * (round_number - 1)))
+		var value := int(_rng.randi_range(15, 60) * (1.0 + 0.1 * (round_number - 1)) * theme.scrap_value)
 		scrap_spawns.append({
-			"pos": cell_center(cell) + offset,
+			"pos": cell_center(cell) + _random_room_offset(),
 			"value": value,
 			"weight": _rng.randf_range(0.05, 0.35),
 			"kind": kinds[_rng.randi_range(0, kinds.size() - 1)],
 		})
 		total += value
+
+
+## The map's residents, plus one more threat for every two rounds survived.
+func _place_entities(round_number: int) -> void:
+	var counts: Dictionary = theme.roster.duplicate()
+	var growth: Array = theme.growth
+	for extra in (round_number - 1) / 2:
+		var kind: String = growth[extra % growth.size()]
+		counts[kind] = counts.get(kind, 0) + 1
+	var far_cells: Array[Vector2i] = []
+	for cell in all_cells():
+		if path(ENTRY_CELL, cell).size() >= MIN_ENTITY_ROOMS and cell != monster_spawn:
+			far_cells.append(cell)
+	var kinds: Array = counts.keys()
+	kinds.sort()
+	var used := 0
+	for kind: String in kinds:
+		for index in counts[kind]:
+			var pos := Vector3.ZERO
+			var cell := monster_spawn
+			if kind in ["patch", "wisp"]:
+				cell = ENTRY_CELL
+			elif kind == "stalker" and index == 0:
+				cell = monster_spawn
+			else:
+				cell = far_cells[(used + _rng.randi_range(0, far_cells.size() - 1)) % far_cells.size()]
+				used += 1
+			pos = cell_center(cell)
+			var data := {"kind": kind, "index": entity_spawns.size(), "pos": pos}
+			if kind == "mimic":
+				var scrap_kinds: Array = SCRAP_MODELS.keys()
+				data["pos"] = pos + _random_room_offset()
+				data["scrap_kind"] = scrap_kinds[_rng.randi_range(0, scrap_kinds.size() - 1)]
+			elif kind == "sentinel":
+				data["pos"] = pos + Vector3(1.8, 0, 1.8)
+			entity_spawns.append(data)

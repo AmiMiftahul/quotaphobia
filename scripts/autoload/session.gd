@@ -9,6 +9,9 @@ signal results_ready(data: Dictionary)
 enum Phase { LOBBY, PLAYING, RESULTS, GAME_OVER }
 
 const DESPAWN_DELAY := 0.5
+const HINT_SECONDS := 7.0
+const BANNER_SECONDS := 6.0
+const HINT_DISTANCE := 13.0
 
 var phase := Phase.LOBBY
 var round_number := 0
@@ -19,15 +22,20 @@ var total_scrap := 0
 var rounds_cleared := 0
 var player_states := {} # peer id -> { "hp": int, "alive": bool }
 var last_results := {}
+var map_id := ""
+var hint_text := ""
+var hint_seconds := 0.0
+var banner_seconds := 0.0
 var layout: FacilityLayout
 var level: Level
 var players_root: Node3D
 var scrap_root: Node3D
-var monster_root: Node3D
+var entity_root: Node3D
 
 # Host-side settings; the tests shorten these.
 var results_seconds := Rules.RESULTS_SECONDS
-var monster_enabled := true
+var entities_enabled := true
+var forced_maps: Array[String] = [] # Tests pick maps instead of the random order.
 
 var _run_seed := 0
 var _crew_size := 1
@@ -36,17 +44,19 @@ var _despawn_timer := 0.0
 var _tick_timer := 0.0
 var _player_spawner: MultiplayerSpawner
 var _scrap_spawner: MultiplayerSpawner
-var _monster_spawner: MultiplayerSpawner
+var _entity_spawner: MultiplayerSpawner
+var _hints_seen := {}
+var _hint_check_timer := 0.0
 
 
 func _ready() -> void:
 	_setup_input()
 	players_root = _make_root("Players")
 	scrap_root = _make_root("ScrapItems")
-	monster_root = _make_root("Monsters")
+	entity_root = _make_root("Entities")
 	_player_spawner = _make_spawner("PlayerSpawner", "Players", _spawn_player)
 	_scrap_spawner = _make_spawner("ScrapSpawner", "ScrapItems", _spawn_scrap)
-	_monster_spawner = _make_spawner("MonsterSpawner", "Monsters", _spawn_monster)
+	_entity_spawner = _make_spawner("EntitySpawner", "Entities", _spawn_entity)
 	Net.peer_left.connect(_on_peer_left)
 	Net.connection_ended.connect(_on_connection_ended.unbind(1))
 
@@ -96,10 +106,19 @@ func _spawn_scrap(data: Dictionary) -> Node:
 	return item
 
 
-func _spawn_monster(data: Dictionary) -> Node:
-	var monster := Monster.new()
-	monster.setup(layout, data.pos)
-	return monster
+func _spawn_entity(data: Dictionary) -> Node:
+	var entity: Entity
+	match data.kind:
+		"stalker": entity = Monster.new()
+		"watcher": entity = Watcher.new()
+		"listener": entity = Listener.new()
+		"mimic": entity = Mimic.new()
+		"gas": entity = GasVent.new()
+		"patch": entity = Patch.new()
+		"sentinel": entity = Sentinel.new()
+		"wisp": entity = Wisp.new()
+	entity.setup(layout, data)
+	return entity
 
 
 # --- Helpers usable on every machine ---------------------------------------
@@ -117,6 +136,22 @@ func item_held_by(peer: int) -> Scrap:
 		if item.holder_id == peer:
 			return item
 	return null
+
+
+func entity_of_kind(kind: String) -> Entity:
+	for entity: Entity in entity_root.get_children():
+		if entity.kind == kind:
+			return entity
+	return null
+
+
+func show_hint(kind: String) -> void:
+	if _hints_seen.has(kind):
+		return
+	_hints_seen[kind] = true
+	hint_text = Entity.INFO[kind].hint
+	hint_seconds = HINT_SECONDS
+	Sfx.play_2d("hint", -14.0)
 
 
 func carried_weight(peer: int) -> float:
@@ -142,7 +177,9 @@ func _begin_round(number: int) -> void:
 	for peer: int in Net.players:
 		states[peer] = {"hp": Rules.PLAYER_MAX_HP, "alive": true}
 	var level_seed: int = hash([_run_seed, number])
-	_rpc_load_round.rpc(level_seed, number, Rules.quota(number, crew), states, total_scrap, rounds_cleared)
+	var maps: Array[String] = forced_maps if not forced_maps.is_empty() else MapThemes.order_for_run(_run_seed)
+	var map: String = maps[(number - 1) % maps.size()]
+	_rpc_load_round.rpc(level_seed, number, Rules.quota(number, crew), states, total_scrap, rounds_cleared, map)
 	var peers: Array = Net.players.keys()
 	peers.sort()
 	for index in peers.size():
@@ -152,14 +189,18 @@ func _begin_round(number: int) -> void:
 		var data: Dictionary = layout.scrap_spawns[index].duplicate()
 		data["id"] = index + 1
 		_scrap_spawner.spawn(data)
-	_monster_spawner.spawn({"pos": FacilityLayout.cell_center(layout.monster_spawn)})
-	var monster := monster_root.get_child(0) as Monster
-	monster.enabled = monster_enabled
+	for data: Dictionary in layout.entity_spawns:
+		_entity_spawner.spawn(data)
+	for entity: Entity in entity_root.get_children():
+		entity.enabled = entities_enabled
 
 
 func _process(delta: float) -> void:
 	if phase == Phase.PLAYING:
 		time_left = maxf(0.0, time_left - delta)
+		banner_seconds = maxf(0.0, banner_seconds - delta)
+		hint_seconds = maxf(0.0, hint_seconds - delta)
+		_check_for_new_entities(delta)
 	if not Net.is_online() or not multiplayer.is_server():
 		return
 	match phase:
@@ -181,6 +222,22 @@ func _process(delta: float) -> void:
 					_begin_round(round_number + 1)
 				else:
 					_rpc_to_lobby.rpc()
+
+
+## The first time you get near each kind, the HUD tells you how to deal with it.
+## Mimics are the exception: telling you about one would spoil the surprise.
+func _check_for_new_entities(delta: float) -> void:
+	_hint_check_timer -= delta
+	if _hint_check_timer > 0.0 or hint_seconds > 0.0:
+		return
+	_hint_check_timer = 0.3
+	var me := player_node(Net.my_id())
+	if me == null or not is_player_alive(me.peer_id):
+		return
+	for entity: Entity in entity_root.get_children():
+		if entity.kind != "mimic" and not _hints_seen.has(entity.kind) and me.position.distance_to(entity.position) < HINT_DISTANCE:
+			show_hint(entity.kind)
+			return
 
 
 func _ship_value() -> int:
@@ -218,7 +275,7 @@ func _end_round() -> void:
 
 
 func _clear_entities() -> void:
-	for root: Node3D in [players_root, scrap_root, monster_root]:
+	for root: Node3D in [players_root, scrap_root, entity_root]:
 		for child in root.get_children():
 			root.remove_child(child)
 			child.queue_free()
@@ -233,6 +290,12 @@ func damage_player(peer: int, amount: int) -> void:
 	if not alive:
 		_release_item(peer)
 		_end_round_if_wiped()
+
+
+func heal_player(peer: int, amount: int) -> void:
+	if not multiplayer.is_server() or not is_player_alive(peer):
+		return
+	_rpc_player_state.rpc(peer, mini(player_states[peer].hp + amount, Rules.PLAYER_MAX_HP), true)
 
 
 func _release_item(peer: int) -> void:
@@ -313,8 +376,13 @@ func request_launch() -> void:
 # --- Messages from the host to everyone --------------------------------------
 
 @rpc("authority", "call_local", "reliable")
-func _rpc_load_round(level_seed: int, number: int, new_quota: int, states: Dictionary, total: int, cleared: int) -> void:
+func _rpc_load_round(level_seed: int, number: int, new_quota: int, states: Dictionary, total: int, cleared: int, map: String) -> void:
 	round_number = number
+	map_id = map
+	banner_seconds = BANNER_SECONDS
+	hint_seconds = 0.0
+	if number == 1:
+		_hints_seen = {}
 	quota = new_quota
 	player_states = states
 	total_scrap = total
@@ -322,7 +390,7 @@ func _rpc_load_round(level_seed: int, number: int, new_quota: int, states: Dicti
 	time_left = Rules.ROUND_SECONDS
 	in_ship_value = 0
 	_free_level()
-	layout = FacilityLayout.new(level_seed, Rules.grid_size(number), number, new_quota)
+	layout = FacilityLayout.new(level_seed, Rules.grid_size(number), number, new_quota, map)
 	level = Level.new()
 	level.name = "Level"
 	add_child(level)
@@ -340,8 +408,9 @@ func _rpc_tick(new_time_left: float, value: int) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _rpc_player_state(peer: int, hp: int, alive: bool) -> void:
+	var old_hp: int = player_states[peer].hp if player_states.has(peer) else hp
 	player_states[peer] = {"hp": hp, "alive": alive}
-	if peer == Net.my_id():
+	if peer == Net.my_id() and hp < old_hp:
 		Sfx.play_2d("hit", -4.0)
 	stats_changed.emit()
 
@@ -376,7 +445,7 @@ func _rpc_to_lobby() -> void:
 
 func _set_phase(new_phase: Phase) -> void:
 	phase = new_phase
-	Sfx.set_ambient(phase == Phase.PLAYING)
+	Sfx.set_ambient(phase == Phase.PLAYING, layout.theme.hum_pitch if layout != null else 1.0)
 	phase_changed.emit()
 	stats_changed.emit()
 

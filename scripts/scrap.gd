@@ -27,13 +27,17 @@ func setup(id: int, data: Dictionary) -> void:
 	model.scale = Vector3.ONE * MODEL_SCALE
 	model.position.y = -0.25 - Assets.bounds(Assets.FACTORY % FacilityLayout.SCRAP_MODELS[kind]).position.y * MODEL_SCALE
 	add_child(model)
-	# A faint warm glow, so scrap can be spotted in the dark.
+	add_glow(model)
+	NetSync.attach(self, [], [^":position", ^":holder_id"])
+
+
+## A faint warm glow, so scrap can be spotted in the dark.
+static func add_glow(model: Node) -> void:
 	var glow := StandardMaterial3D.new()
 	glow.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	glow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	glow.albedo_color = Color(1.0, 0.75, 0.25, 0.18)
 	_set_overlay(model, glow)
-	NetSync.attach(self, [], [^":position", ^":holder_id"])
 
 
 func _process(_delta: float) -> void:
@@ -44,7 +48,7 @@ func _process(_delta: float) -> void:
 		position = holder.position + holder.forward() * 0.6 + Vector3(0, 1.0, 0)
 
 
-func _set_overlay(node: Node, material: Material) -> void:
+static func _set_overlay(node: Node, material: Material) -> void:
 	if node is MeshInstance3D:
 		node.material_overlay = material
 	for child in node.get_children():

@@ -168,7 +168,8 @@ func _move(delta: float) -> void:
 	if can_act:
 		move += Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var sprinting := can_act and Input.is_action_pressed("sprint") and stamina > 0.0 and move != Vector2.ZERO
-	stamina = clampf(stamina + (-STAMINA_DRAIN if sprinting else STAMINA_REGEN) * delta, 0.0, 1.0)
+	var regen: float = STAMINA_REGEN * Session.layout.theme.stamina_regen
+	stamina = clampf(stamina + (-STAMINA_DRAIN if sprinting else regen) * delta, 0.0, 1.0)
 	var speed := (SPRINT_SPEED if sprinting else WALK_SPEED) * (1.0 - Session.carried_weight(peer_id))
 	var direction := (transform.basis * Vector3(move.x, 0.0, move.y)).normalized()
 	velocity.x = direction.x * speed
