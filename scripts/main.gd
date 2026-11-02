@@ -22,6 +22,9 @@ var _crosshair: Label
 var _health_bar: ProgressBar
 var _stamina_bar: ProgressBar
 var _results_label: Label
+var _carry_slots: Array[PanelContainer] = []
+var _slot_style: StyleBoxFlat
+var _slot_hand_style: StyleBoxFlat
 var _phone_panel: PanelContainer
 var _phone_view: TextureRect
 var _phone_status: Label
@@ -73,8 +76,9 @@ func _process(_delta: float) -> void:
 		return
 	var seconds := int(ceil(Session.time_left))
 	var theme: Dictionary = MapThemes.get_theme(Session.map_id)
-	_top_label.text = "%s    Round %d    Time %d:%02d    In ship $%d / quota $%d" % [
-		theme.name, Session.round_number, seconds / 60, seconds % 60, Session.in_ship_value, Session.quota]
+	_top_label.text = "%s    Level %d    Day %d of %d    Time %d:%02d    In ship $%d    Goal $%d / $%d" % [
+		theme.name, Session.level_number, Session.day, Session.days_per_level, seconds / 60, seconds % 60,
+		Session.in_ship_value, Session.level_banked + Session.in_ship_value, Session.quota]
 	_banner_label.visible = Session.banner_seconds > 0.0
 	_banner_label.text = "%s\n%s\n%s" % [theme.name.to_upper(), theme.tagline, theme.rule]
 	_hint_label.visible = Session.hint_seconds > 0.0
@@ -85,8 +89,20 @@ func _process(_delta: float) -> void:
 		_prompt_label.text = player.interact_prompt
 		_stamina_bar.value = player.stamina
 	_update_phone(player)
+	_update_backpack()
 	var state: Dictionary = Session.player_states.get(Net.my_id(), {"hp": 0})
 	_health_bar.value = state.hp
+
+
+func _update_backpack() -> void:
+	var carried := Session.items_held_by(Net.my_id())
+	for index in _carry_slots.size():
+		var slot: PanelContainer = _carry_slots[index]
+		var label: Label = slot.get_child(0)
+		var item: Scrap = carried[index] if index < carried.size() else null
+		label.text = "%s\n$%d" % [item.kind, item.value] if item != null else ""
+		var in_hand := item != null and not item.stowed
+		slot.add_theme_stylebox_override("panel", _slot_hand_style if in_hand else _slot_style)
 
 
 func _update_phone(player: Player) -> void:
@@ -227,9 +243,17 @@ func _on_connection_ended(reason: String) -> void:
 
 
 func _on_results(data: Dictionary) -> void:
-	var headline: String = "Quota met! Next round is coming up." if data.cleared else "Run over. Back to the lobby soon."
-	_results_label.text = "%s\n\nRound %d\nCollected $%d of $%d\nSurvivors: %d\nRun total: $%d" % [
-		headline, data.round, data.collected, data.quota, data.survivors, data.total_scrap]
+	var days_left: int = data.days - data.day
+	var headline := "Day over. %d %s left to reach the goal." % [days_left, "day" if days_left == 1 else "days"]
+	if data.cleared:
+		headline = "Goal reached! Level %d is next." % (data.level + 1)
+	elif data.run_over:
+		headline = "Out of days. The run is over."
+	var today := "Banked today: $%d" % data.collected
+	if data.survivors == 0:
+		today = "Nobody made it back. Today's scrap is lost."
+	_results_label.text = "%s\n\nLevel %d, day %d of %d\n%s\nGoal: $%d of $%d\nSurvivors: %d\nRun total: $%d" % [
+		headline, data.level, data.day, data.days, today, data.banked, data.quota, data.survivors, data.total_scrap]
 
 
 func _on_leaderboard(rows: Array) -> void:
@@ -242,7 +266,7 @@ func _on_leaderboard(rows: Array) -> void:
 	var lines := PackedStringArray(["Top crews"])
 	for index in rows.size():
 		var row: Dictionary = rows[index]
-		lines.append("%d. %s  $%d  (%d rounds, crew of %d)" % [
+		lines.append("%d. %s  $%d  (%d levels, crew of %d)" % [
 			index + 1, row.display_name, row.total_scrap, row.rounds_cleared, row.crew_size])
 	_board_label.text = "\n".join(lines)
 
@@ -376,6 +400,8 @@ func _build_hud() -> void:
 	_top_label.position = Vector2(20, 14)
 	_prompt_label = _label(_hud, "", 20)
 	_prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_prompt_label.add_theme_constant_override("outline_size", 6)
+	_prompt_label.add_theme_color_override("font_outline_color", Color.BLACK)
 	_prompt_label.anchor_right = 1.0
 	_prompt_label.anchor_top = 0.58
 	_prompt_label.anchor_bottom = 0.58
@@ -401,9 +427,38 @@ func _build_hud() -> void:
 	_crosshair.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_crosshair.grow_vertical = Control.GROW_DIRECTION_BOTH
 	_build_phone_panel()
+	_build_backpack_slots()
 	_health_bar = _bar(Vector2(20, -70), Rules.PLAYER_MAX_HP, Color(0.8, 0.2, 0.2))
 	_stamina_bar = _bar(Vector2(20, -40), 1.0, Color(0.3, 0.7, 0.3))
 	_stamina_bar.step = 0.01
+
+
+func _build_backpack_slots() -> void:
+	_slot_style = StyleBoxFlat.new()
+	_slot_style.bg_color = Color(0.05, 0.05, 0.06, 0.65)
+	_slot_style.set_corner_radius_all(4)
+	_slot_style.set_content_margin_all(3)
+	_slot_hand_style = _slot_style.duplicate()
+	_slot_hand_style.bg_color = Color(0.45, 0.3, 0.08, 0.85)
+	_slot_hand_style.set_border_width_all(2)
+	_slot_hand_style.border_color = Color(1.0, 0.8, 0.35)
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 4)
+	_hud.add_child(row)
+	for index in Rules.CARRY_LIMIT:
+		var slot := PanelContainer.new()
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slot.custom_minimum_size = Vector2(86, 58)
+		row.add_child(slot)
+		var label := _label(slot, "", 11)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		_carry_slots.append(slot)
+	row.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE)
+	row.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	row.position.x = 256.0
+	row.position.y -= 16.0
 
 
 func _build_phone_panel() -> void:

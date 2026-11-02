@@ -29,6 +29,8 @@ func _ready() -> void:
 		"entities": await _entities()
 		"settings": await _settings()
 		"video": await _video()
+		"carry": await _carry()
+		"days": await _days()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
 	get_tree().quit(1 if fails > 0 else 0)
@@ -131,7 +133,17 @@ func _unit() -> void:
 	check("scrap never spawns inside the ship", ship_clear)
 	var different := FacilityLayout.new(1, 6, 1, 100).fingerprint() != FacilityLayout.new(2, 6, 1, 100).fingerprint()
 	check("different seeds build different facilities", different)
-	check("quota grows every round", Rules.quota(2, 4) > Rules.quota(1, 4))
+	check("the goal grows every level", Rules.quota(2, 4) > Rules.quota(1, 4))
+	var always_reachable := true
+	for level_no in range(1, 13):
+		for crew in range(1, 5):
+			var goal := Rules.quota(level_no, crew)
+			var toughness := Rules.difficulty(level_no)
+			var daily := 0
+			for spawn in FacilityLayout.new(level_no * 7 + crew, Rules.grid_size(toughness), toughness, ceili(goal / 3.0)).scrap_spawns:
+				daily += spawn.value
+			always_reachable = always_reachable and daily * Rules.DAYS_PER_LEVEL >= goal
+	check("four days always hold enough scrap to reach the goal", always_reachable)
 	check("quota grows with crew size", Rules.quota(1, 4) > Rules.quota(1, 1))
 	check("secret database keys are refused", Cloud._is_secret_key("sb_secret_abc"))
 	check("ship boundary", Rules.in_ship(Vector3(0, 0, -10)) and not Rules.in_ship(Vector3(0, 0, 0)))
@@ -527,6 +539,7 @@ func _ui() -> void:
 
 	Session.entities_enabled = false
 	Session.forced_maps = ["foundry"]
+	Session.days_per_level = 1
 	Session.results_seconds = 3.0
 	main._start_button.pressed.emit()
 	check("start button begins the round", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING))
@@ -662,6 +675,7 @@ func _ui() -> void:
 	check("the monster stays inside the facility", stayed_inside)
 
 	await _ui_phone(main)
+	await _ui_backpack(main)
 	await _ui_settings(main)
 
 	# Pause menu.
@@ -702,6 +716,7 @@ func _ui() -> void:
 	for map: String in MapThemes.ORDER:
 		Session.forced_maps = [map]
 		Session._clear_entities()
+		Session.level_number = 3 # Tough enough for the largest facility.
 		Session._begin_round(4)
 		Session.entities_enabled = true
 		await until(func() -> bool: return me() != null, 3.0)
@@ -893,6 +908,48 @@ func _average_brightness(image: Image) -> float:
 			total += image.get_pixel(x, y).v
 			samples += 1
 	return total / samples
+
+
+## The backpack, with real keys.
+func _ui_backpack(main: Control) -> void:
+	var taken := 0
+	for attempt in 3:
+		var next: Scrap = free_items_outside_ship()[attempt]
+		me().rotation.y = 0.0
+		me().teleport(Vector3(next.position.x, 0.1, next.position.z + 1.5))
+		await wait(0.2)
+		await _press(KEY_E)
+		await wait(0.2)
+		taken = Session.items_held_by(1).size()
+	check("E keeps adding to the backpack (carrying %d)" % taken, taken >= 2)
+	await wait(0.1)
+	var slot_text: String = main._carry_slots[0].get_child(0).text
+	check("the HUD lists what you carry", not slot_text.is_empty() and slot_text.contains("$"))
+	var screen_area := get_viewport().get_visible_rect()
+	var row_rect: Rect2 = main._carry_slots[0].get_parent().get_global_rect()
+	check("the backpack bar fits on screen", screen_area.encloses(row_rect))
+	check("the backpack bar stays clear of the health bars", not row_rect.intersects(main._health_bar.get_global_rect()) and not row_rect.intersects(main._stamina_bar.get_global_rect()))
+	await _press(KEY_P)
+	await wait(0.2)
+	check("the backpack bar stays clear of the phone", not row_rect.intersects(main._phone_panel.get_global_rect()))
+	await _shot("backpack_and_phone")
+	await _press(KEY_P)
+	var hand := Session.item_held_by(1)
+	var in_hand := Session.item_held_by(1)
+	var on_screen: Vector2 = me()._camera.unproject_position(in_hand.global_position)
+	check("your own item sits low and to the right, clear of the crosshair (%s)" % on_screen, on_screen.x > 760.0 and on_screen.y > 420.0)
+	check("your own item is still on screen", get_viewport().get_visible_rect().has_point(on_screen))
+	check("the prompt offers switching items", me().interact_prompt.contains("Q: switch item") or await until(func() -> bool: return me().interact_prompt.contains("Q: switch item"), 1.0))
+	await _shot("backpack")
+	await _press(KEY_Q)
+	check("Q switches the item in hand", await until(func() -> bool: return Session.item_held_by(1) != hand, 2.0))
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.2)
+	for count in Rules.CARRY_LIMIT:
+		await _press(KEY_G)
+		await wait(0.1)
+	check("G empties the backpack one item at a time", Session.items_held_by(1).is_empty())
+	await wait(1.1)
 
 
 ## The settings screen and everything it controls, with real input.
@@ -1100,6 +1157,214 @@ func _ui_settings(main: Control) -> void:
 	check("prompts return to keyboard keys", not Settings.using_pad)
 	me().rotation.y = 0.0
 	me().teleport(Vector3(0, 0.1, -9.0))
+
+
+# --- The backpack's rules -------------------------------------------------------
+
+func _carry() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.goal_override = 100000
+	Session.start_run()
+	await until(func() -> bool: return me() != null, 3.0)
+	await wait(0.2)
+	var host_id := Net.my_id()
+	check("you start with nothing", Session.items_held_by(host_id).is_empty() and Session.carried_weight(host_id) == 0.0)
+	check("the backpack adds five to the one in your hands", Rules.CARRY_LIMIT == 6)
+	var items: Array[Scrap] = free_items_outside_ship()
+	check("there's more scrap than you can carry", items.size() > Rules.CARRY_LIMIT)
+	for index in Rules.CARRY_LIMIT:
+		me().teleport(items[index].position)
+		await wait(0.05)
+		Session.request_pickup.rpc_id(1, items[index].item_id)
+		check("item %d can be carried" % (index + 1), Session.items_held_by(host_id).size() == index + 1)
+		check("the newest item goes in your hands", Session.item_held_by(host_id) == items[index])
+	var stowed_count := 0
+	for item in Session.items_held_by(host_id):
+		if item.stowed:
+			stowed_count += 1
+	check("exactly five are in the backpack", stowed_count == 5)
+
+	# Number seven doesn't fit, and the prompt says so.
+	var extra: Scrap = items[Rules.CARRY_LIMIT]
+	me().rotation.y = 0.0
+	me().teleport(Vector3(extra.position.x, 0.1, extra.position.z + 1.5))
+	await wait(0.2)
+	Session.request_pickup.rpc_id(1, extra.item_id)
+	check("a seventh item is refused", extra.holder_id == 0 and Session.items_held_by(host_id).size() == Rules.CARRY_LIMIT)
+	check("the prompt says you're full", me().interact_prompt.contains("full"))
+
+	# Weight.
+	var full_load := Session.carried_weight(host_id)
+	check("a full load slows you (%.2f)" % full_load, full_load > 0.0)
+	check("you can always still move", full_load <= Rules.MAX_CARRY_SLOWDOWN and 1.0 - full_load >= 0.4)
+	me().teleport(room_for_walk())
+	await wait(0.1)
+	var loaded_from := me().position
+	me().bot_move = Vector2(0, 1)
+	await wait(0.5)
+	me().bot_move = Vector2.ZERO
+	var loaded_distance := me().position.distance_to(loaded_from)
+	check("a full load really moves (%.2f m)" % loaded_distance, loaded_distance > 0.2)
+
+	# Everything follows you.
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.2)
+	for item in Session.items_held_by(host_id):
+		check("carried items stay with you", item.position.distance_to(me().position) < 2.0)
+	var in_ship_total := 0
+	for item in Session.items_held_by(host_id):
+		in_ship_total += item.value
+	check("everything carried into the ship counts", Session._ship_value() == in_ship_total)
+
+	# Switching goes all the way round.
+	var order: Array = []
+	for step in Rules.CARRY_LIMIT:
+		order.append(Session.item_held_by(host_id))
+		Session.request_cycle_item.rpc_id(1)
+	var unique_hands := {}
+	for item: Scrap in order:
+		unique_hands[item] = true
+	check("switching reaches every item", unique_hands.size() == Rules.CARRY_LIMIT)
+	check("switching comes back round", Session.item_held_by(host_id) == order[0])
+	var in_hand_count := 0
+	for item in Session.items_held_by(host_id):
+		if not item.stowed:
+			in_hand_count += 1
+	check("only one item is ever in your hands", in_hand_count == 1)
+
+	# Dropping takes one at a time, and the next comes to hand.
+	var dropped := Session.item_held_by(host_id)
+	Session.request_drop.rpc_id(1)
+	check("drop leaves one on the floor", dropped.holder_id == 0 and dropped.visible)
+	check("the next item comes to hand", Session.item_held_by(host_id) != null and Session.items_held_by(host_id).size() == Rules.CARRY_LIMIT - 1)
+
+	# Dying spills everything, within reach and in sight.
+	me().teleport(FacilityLayout.cell_center(FacilityLayout.ENTRY_CELL) + Vector3(0, 0.1, 0))
+	await wait(0.2)
+	var spilled := Session.items_held_by(host_id)
+	var death_spot := me().net_pos
+	Net.players[99] = "Stand-in"
+	Session.player_states[99] = {"hp": 100, "alive": true}
+	Session.damage_player(host_id, Rules.PLAYER_MAX_HP)
+	check("dying drops everything", Session.items_held_by(host_id).is_empty())
+	var spill_ok := true
+	var positions := {}
+	for item in spilled:
+		spill_ok = spill_ok and item.visible and not item.stowed and Vector2(item.position.x - death_spot.x, item.position.z - death_spot.z).length() < 1.0
+		positions[item.position] = true
+	check("dropped items stay close and visible", spill_ok)
+	check("dropped items don't all stack up", positions.size() == spilled.size())
+	Net.leave()
+
+
+func room_for_walk() -> Vector3:
+	return FacilityLayout.cell_center(FacilityLayout.ENTRY_CELL) + Vector3(0, 0.1, -3.0)
+
+
+# --- Four days to reach each level's goal ---------------------------------------
+
+## Finishes the day with exactly `value` worth of scrap banked, or with the crew dead.
+func _end_day(value: int, everyone_dies: bool = false) -> void:
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and me() != null, 5.0)
+	await wait(0.1)
+	var banked := 0
+	for item: Scrap in Session.scrap_root.get_children():
+		if banked < value:
+			item.value = mini(item.value, value - banked)
+			item.position = Vector3(0, 0.25, -9.0)
+			banked += item.value
+		else:
+			item.position = Vector3(1000, 0.25, 1000)
+	if everyone_dies:
+		me().teleport(FacilityLayout.cell_center(FacilityLayout.ENTRY_CELL) + Vector3(0, 0.1, 0))
+		await wait(0.2)
+		Session.damage_player(Net.my_id(), Rules.PLAYER_MAX_HP)
+	else:
+		me().teleport(Vector3(0, 0.1, -9.0))
+		await wait(0.2)
+		Session._end_round()
+	await until(func() -> bool: return Session.phase != Session.Phase.PLAYING, 3.0)
+
+
+func _days() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.results_seconds = 0.7
+	Session.forced_maps = []
+	Session.goal_override = 100
+	var main: Control = load("res://scenes/main.tscn").instantiate()
+	add_child(main)
+	await wait(0.1)
+	Session.start_run()
+	check("a run starts on level 1, day 1", Session.level_number == 1 and Session.day == 1 and Session.days_per_level == 4)
+	await until(func() -> bool: return me() != null, 3.0)
+	var first_map := Session.map_id
+
+	# Scrap adds up across days, and the day moves on.
+	await _end_day(40)
+	var results: Dictionary = Session.last_results
+	check("day 1: the run carries on", Session.phase == Session.Phase.RESULTS and results.run_over == false and results.cleared == false)
+	check("day 1: the amounts are reported", results.collected == 40 and results.banked == 40 and results.day == 1 and results.days == 4)
+	check("the results say how many days are left", main._results_label.text.begins_with("Day over. 3 days left"))
+	check("the results show progress toward the goal", main._results_label.text.contains("Goal: $40 of $100"))
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == 2, 5.0)
+	check("day 2 begins on its own", Session.day == 2 and Session.level_number == 1)
+	check("day 1's scrap still counts", Session.level_banked == 40)
+	await wait(0.1)
+	check("the HUD shows the day", main._top_label.text.contains("Level 1") and main._top_label.text.contains("Day 2 of 4"))
+	check("the HUD shows banked scrap toward the goal", main._top_label.text.contains("Goal $40 / $100"))
+	check("each day is a different map", Session.map_id != first_map)
+	check("the clock restarts each day", Session.time_left > Rules.ROUND_SECONDS - 5.0)
+
+	# A dead crew loses that day's scrap and the day, but not the run.
+	await _end_day(30, true)
+	results = Session.last_results
+	check("a wipe doesn't end the run", Session.phase == Session.Phase.RESULTS and results.run_over == false)
+	check("a wipe loses that day's scrap", results.collected == 0 and results.banked == 40)
+	check("the results explain a wipe", main._results_label.text.contains("Nobody made it back") and main._results_label.text.begins_with("Day over. 2 days left"))
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == 3, 5.0)
+	check("a wipe still uses up the day", Session.day == 3 and Session.level_banked == 40)
+	check("everyone is back the next day", Session.is_player_alive(Net.my_id()))
+
+	# Reaching the goal moves on straight away, even with days to spare.
+	await _end_day(60)
+	results = Session.last_results
+	check("reaching the goal clears the level", results.cleared == true and results.banked == 100 and results.run_over == false)
+	check("one level is recorded as cleared", Session.rounds_cleared == 1)
+	check("the results celebrate the level", main._results_label.text.begins_with("Goal reached! Level 2 is next."))
+	await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.level_number == 2, 5.0)
+	check("the next level starts on day 1", Session.level_number == 2 and Session.day == 1)
+	check("the next level starts from zero", Session.level_banked == 0)
+
+	# Falling short after day 4 ends the run. Exactly four days, no more.
+	for day_number in range(1, 4):
+		check("level 2, day %d is played" % day_number, Session.day == day_number)
+		await _end_day(10)
+		check("level 2, day %d doesn't end the run" % day_number, Session.phase == Session.Phase.RESULTS)
+		await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == day_number + 1, 5.0)
+	check("the wording handles one day left", Session.last_results.day == 3 and main._results_label.text.begins_with("Day over. 1 day left"))
+	check("day 4 is the last chance", Session.day == 4 and Session.level_banked == 30)
+	await _end_day(10)
+	results = Session.last_results
+	check("missing the goal on day 4 ends the run", Session.phase == Session.Phase.GAME_OVER and results.run_over == true and results.cleared == false)
+	check("the run total includes every day", results.total_scrap == 40 + 60 + 40)
+	check("the results say the run is over", main._results_label.text.begins_with("Out of days."))
+	check("the crew returns to the lobby", await until(func() -> bool: return Session.phase == Session.Phase.LOBBY, 5.0))
+
+	# Reaching the goal on the very last day still counts.
+	Session.start_run()
+	await until(func() -> bool: return me() != null, 3.0)
+	check("a new run starts fresh", Session.level_number == 1 and Session.day == 1 and Session.level_banked == 0 and Session.rounds_cleared == 0)
+	for day_number in range(1, 4):
+		await _end_day(30)
+		await until(func() -> bool: return Session.phase == Session.Phase.PLAYING and Session.day == day_number + 1, 5.0)
+	await _end_day(10)
+	results = Session.last_results
+	check("reaching the goal on day 4 still clears the level", results.cleared == true and results.day == 4 and results.run_over == false)
+	check("the goal grows with each level", Rules.quota(2, 1) > Rules.quota(1, 1))
+	Net.leave()
 
 
 # --- Video files ------------------------------------------------------------------
@@ -1416,6 +1681,8 @@ func _scenario() -> void:
 		Session.results_seconds = 2.0
 		Session.entities_enabled = false
 		Session.forced_maps = ["foundry", "reactor"]
+		Session.goal_override = 60
+		Session.days_per_level = 1
 	else:
 		check("client can start connecting", Net.join("Bot%d" % idx, "127.0.0.1", port) == OK)
 	check("all four players are in the lobby", await until(func() -> bool: return Net.players.size() == 4))
@@ -1515,6 +1782,36 @@ func _scenario() -> void:
 		Session.request_drop.rpc_id(1)
 	check("dropped scrap is free again", await until(func() -> bool: return item(2).holder_id == 0))
 	await barrier("dropped", 4)
+
+	# A backpack, seen by everyone: Bot3 carries two things, then puts them back.
+	var pack_items: Array[Scrap] = free_items_outside_ship()
+	var first_pack: Scrap = pack_items[0]
+	var second_pack: Scrap = pack_items[1]
+	if idx == 3:
+		me().teleport(first_pack.position)
+		await wait(0.3)
+		Session.request_pickup.rpc_id(1, first_pack.item_id)
+		await until(func() -> bool: return first_pack.holder_id == bot3, 3.0)
+		me().teleport(second_pack.position)
+		await wait(0.3)
+		Session.request_pickup.rpc_id(1, second_pack.item_id)
+	check("everyone sees a player carry two items", await until(func() -> bool: return Session.items_held_by(bot3).size() == 2))
+	check("everyone agrees what's in the backpack", await until(func() -> bool: return first_pack.stowed and not second_pack.stowed))
+	check("a stowed item can't be seen", not first_pack.visible and second_pack.visible)
+	if idx != 3:
+		check("other players see the backpack", await until(func() -> bool: return Session.player_node(bot3)._backpack_model.visible, 2.0))
+	await barrier("packed", 4)
+	if idx == 3:
+		Session.request_cycle_item.rpc_id(1)
+	check("everyone sees the switch", await until(func() -> bool: return not first_pack.stowed and second_pack.stowed))
+	await barrier("switched", 4)
+	if idx == 3:
+		Session.request_drop.rpc_id(1)
+		await wait(0.2)
+		Session.request_drop.rpc_id(1)
+	check("everyone sees the items dropped", await until(func() -> bool: return Session.items_held_by(bot3).is_empty()))
+	check("dropped items can be seen again", first_pack.visible and second_pack.visible)
+	await barrier("unpacked", 4)
 
 	# Banking scrap in the ship until the quota is met.
 	if idx == 1:
@@ -1669,6 +1966,7 @@ func _scenario() -> void:
 	check("the timer ends the run", await until(func() -> bool: return Session.phase == Session.Phase.GAME_OVER))
 	check("a failed round is not counted as cleared", Session.last_results.cleared == false and Session.rounds_cleared == 1)
 	check("the map changed for round 2", Session.map_id == "reactor" or Session.phase != Session.Phase.PLAYING)
+	check("the run's end is reported to everyone", Session.last_results.run_over == true)
 	check("the crew returns to the lobby", await until(func() -> bool: return Session.phase == Session.Phase.LOBBY))
 	check("the world is cleared after the run", Session.players_root.get_child_count() == 0 and Session.level == null)
 	check("this player's run was saved to the database", await until(func() -> bool: return Cloud.submit_count >= 1) and Cloud.last_submit_ok)

@@ -19,7 +19,11 @@ var quota := 0
 var time_left := 0.0
 var in_ship_value := 0
 var total_scrap := 0
-var rounds_cleared := 0
+var rounds_cleared := 0 # Levels cleared. The online leaderboard keeps this column name.
+var level_number := 1
+var day := 1
+var days_per_level := Rules.DAYS_PER_LEVEL
+var level_banked := 0 # Scrap value banked on earlier days of this level.
 var player_states := {} # peer id -> { "hp": int, "alive": bool }
 var last_results := {}
 var map_id := ""
@@ -36,6 +40,7 @@ var entity_root: Node3D
 var results_seconds := Rules.RESULTS_SECONDS
 var entities_enabled := true
 var forced_maps: Array[String] = [] # Tests pick maps instead of the random order.
+var goal_override := 0 # Tests can set a level's goal directly.
 
 var _run_seed := 0
 var _crew_size := 1
@@ -116,11 +121,22 @@ func player_node(peer: int) -> Player:
 	return players_root.get_node_or_null("P%d" % peer) as Player
 
 
+## The item in this player's hands.
 func item_held_by(peer: int) -> Scrap:
 	for item: Scrap in scrap_root.get_children():
-		if item.holder_id == peer:
+		if item.holder_id == peer and not item.stowed:
 			return item
 	return null
+
+
+## Everything this player carries, hands and backpack, always in the same order.
+func items_held_by(peer: int) -> Array[Scrap]:
+	var items: Array[Scrap] = []
+	for item: Scrap in scrap_root.get_children():
+		if item.holder_id == peer:
+			items.append(item)
+	items.sort_custom(func(a: Scrap, b: Scrap) -> bool: return a.item_id < b.item_id)
+	return items
 
 
 func entity_of_kind(kind: String) -> Entity:
@@ -141,9 +157,12 @@ func show_hint(kind: String) -> void:
 	Sfx.play_2d("hint", -14.0)
 
 
+## How much a player's load slows them down: 0 is not at all.
 func carried_weight(peer: int) -> float:
-	var item := item_held_by(peer)
-	return item.weight if item != null else 0.0
+	var total := 0.0
+	for item in items_held_by(peer):
+		total += item.weight * (Rules.STOWED_WEIGHT_SHARE if item.stowed else 1.0)
+	return minf(total, Rules.MAX_CARRY_SLOWDOWN)
 
 
 # --- Host: starting and finishing rounds -----------------------------------
@@ -155,18 +174,25 @@ func start_run() -> void:
 	_crew_size = Net.players.size()
 	total_scrap = 0
 	rounds_cleared = 0
+	level_number = 1
+	day = 1
+	level_banked = 0
+	quota = _goal_for_level()
 	_begin_round(1)
 
 
+func _goal_for_level() -> int:
+	return goal_override if goal_override > 0 else Rules.quota(level_number, Net.players.size())
+
+
 func _begin_round(number: int) -> void:
-	var crew := Net.players.size()
 	var states := {}
 	for peer: int in Net.players:
 		states[peer] = {"hp": Rules.PLAYER_MAX_HP, "alive": true}
 	var level_seed: int = hash([_run_seed, number])
 	var maps: Array[String] = forced_maps if not forced_maps.is_empty() else MapThemes.order_for_run(_run_seed)
 	var map: String = maps[(number - 1) % maps.size()]
-	_rpc_load_round.rpc(level_seed, number, Rules.quota(number, crew), states, total_scrap, rounds_cleared, map)
+	_rpc_load_round.rpc(level_seed, number, quota, states, total_scrap, rounds_cleared, map, level_number, day, days_per_level, level_banked)
 	var peers: Array = Net.players.keys()
 	peers.sort()
 	for index in peers.size():
@@ -243,17 +269,31 @@ func _end_round() -> void:
 			survivors += 1
 	# If nobody makes it home, nobody can sell what was collected.
 	var collected := _ship_value() if survivors > 0 else 0
-	var cleared := survivors > 0 and collected >= quota
+	var banked := level_banked + collected
+	var cleared := banked >= quota
 	var data := {
-		"round": round_number,
+		"level": level_number,
+		"day": day,
+		"days": days_per_level,
 		"quota": quota,
 		"collected": collected,
+		"banked": banked,
 		"survivors": survivors,
 		"cleared": cleared,
+		"run_over": not cleared and day >= days_per_level,
 		"total_scrap": total_scrap + collected,
 		"rounds_cleared": rounds_cleared + (1 if cleared else 0),
 		"crew_size": _crew_size,
 	}
+	# What the next day will be. Scrap counts toward this level's goal until it's met.
+	if cleared:
+		level_number += 1
+		day = 1
+		level_banked = 0
+		quota = _goal_for_level()
+	else:
+		day += 1
+		level_banked = banked
 	_rpc_results.rpc(data)
 	# Everyone stops sending movement now; players are removed once the last
 	# updates have landed, so nothing arrives for a node that's already gone.
@@ -275,7 +315,7 @@ func damage_player(peer: int, amount: int) -> void:
 	var alive := hp > 0
 	_rpc_player_state.rpc(peer, maxi(hp, 0), alive)
 	if not alive:
-		_release_item(peer)
+		_release_all_items(peer)
 		_end_round_if_wiped()
 
 
@@ -285,14 +325,32 @@ func heal_player(peer: int, amount: int) -> void:
 	_rpc_player_state.rpc(peer, mini(player_states[peer].hp + amount, Rules.PLAYER_MAX_HP), true)
 
 
-func _release_item(peer: int) -> void:
+func _put_on_floor(item: Scrap, at: Vector3) -> void:
+	item.holder_id = 0
+	item.stowed = false
+	item.position = Vector3(at.x, 0.25, at.z)
+
+
+## Drops the item in hand, and the next one from the backpack takes its place.
+func _drop_hand_item(peer: int) -> void:
 	var item := item_held_by(peer)
 	if item == null:
 		return
 	var node := player_node(peer)
-	var at := node.net_pos if node != null else item.position
-	item.holder_id = 0
-	item.position = Vector3(at.x, 0.25, at.z)
+	_put_on_floor(item, node.net_pos if node != null else item.position)
+	var remaining := items_held_by(peer)
+	if not remaining.is_empty():
+		remaining[0].stowed = false
+
+
+## Everything falls in a small ring around the player, so it can all be picked up.
+func _release_all_items(peer: int) -> void:
+	var items := items_held_by(peer)
+	var node := player_node(peer)
+	for index in items.size():
+		var at: Vector3 = node.net_pos if node != null else items[index].position
+		var angle := TAU * index / maxi(items.size(), 1)
+		_put_on_floor(items[index], at + Vector3(cos(angle), 0, sin(angle)) * (0.0 if items.size() == 1 else 0.5))
 
 
 func _end_round_if_wiped() -> void:
@@ -308,7 +366,7 @@ func _on_peer_left(peer: int) -> void:
 	if phase != Phase.PLAYING:
 		player_states.erase(peer)
 		return
-	_release_item(peer)
+	_release_all_items(peer)
 	var node := player_node(peer)
 	if node != null:
 		players_root.remove_child(node)
@@ -334,17 +392,37 @@ func request_pickup(item_id: int) -> void:
 	var item := scrap_root.get_node_or_null("Scrap%d" % item_id) as Scrap
 	if node == null or item == null or not is_player_alive(peer):
 		return
-	if item.holder_id != 0 or item_held_by(peer) != null:
+	var carried := items_held_by(peer)
+	if item.holder_id != 0 or carried.size() >= Rules.CARRY_LIMIT:
 		return
 	if node.net_pos.distance_to(item.position) > Rules.SERVER_RANGE:
 		return
+	# What was in your hands goes in the backpack.
+	for other in carried:
+		other.stowed = true
 	item.holder_id = peer
+	item.stowed = false
 
 
 @rpc("any_peer", "call_local", "reliable")
 func request_drop() -> void:
 	if multiplayer.is_server() and phase == Phase.PLAYING:
-		_release_item(multiplayer.get_remote_sender_id())
+		_drop_hand_item(multiplayer.get_remote_sender_id())
+
+
+## Puts the item in hand away and takes out the next one.
+@rpc("any_peer", "call_local", "reliable")
+func request_cycle_item() -> void:
+	if not multiplayer.is_server() or phase != Phase.PLAYING:
+		return
+	var peer := multiplayer.get_remote_sender_id()
+	var carried := items_held_by(peer)
+	var hand := item_held_by(peer)
+	if carried.size() < 2 or hand == null or not is_player_alive(peer):
+		return
+	var next := carried[(carried.find(hand) + 1) % carried.size()]
+	hand.stowed = true
+	next.stowed = false
 
 
 @rpc("any_peer", "call_local", "reliable")
@@ -363,8 +441,12 @@ func request_launch() -> void:
 # --- Messages from the host to everyone --------------------------------------
 
 @rpc("authority", "call_local", "reliable")
-func _rpc_load_round(level_seed: int, number: int, new_quota: int, states: Dictionary, total: int, cleared: int, map: String) -> void:
+func _rpc_load_round(level_seed: int, number: int, new_quota: int, states: Dictionary, total: int, cleared: int, map: String, new_level: int, new_day: int, days: int, banked: int) -> void:
 	round_number = number
+	level_number = new_level
+	day = new_day
+	days_per_level = days
+	level_banked = banked
 	map_id = map
 	banner_seconds = BANNER_SECONDS
 	hint_seconds = 0.0
@@ -377,7 +459,9 @@ func _rpc_load_round(level_seed: int, number: int, new_quota: int, states: Dicti
 	time_left = Rules.ROUND_SECONDS
 	in_ship_value = 0
 	_free_level()
-	layout = FacilityLayout.new(level_seed, Rules.grid_size(number), number, new_quota, map)
+	# Each day offers well over a third of the goal, so a level can always be won in time.
+	var toughness := Rules.difficulty(new_level)
+	layout = FacilityLayout.new(level_seed, Rules.grid_size(toughness), toughness, ceili(new_quota / 3.0), map)
 	level = Level.new()
 	level.name = "Level"
 	add_child(level)
@@ -419,10 +503,13 @@ func _rpc_results(data: Dictionary) -> void:
 		own_player.get_node("Sync").public_visibility = false
 	_free_level()
 	Sfx.play_2d("launch", -8.0)
-	Sfx.play_2d("win" if data.cleared else "lose", -10.0)
-	_set_phase(Phase.RESULTS if data.cleared else Phase.GAME_OVER)
+	if data.cleared:
+		Sfx.play_2d("win", -10.0)
+	elif data.run_over:
+		Sfx.play_2d("lose", -10.0)
+	_set_phase(Phase.GAME_OVER if data.run_over else Phase.RESULTS)
 	results_ready.emit(data)
-	if not data.cleared:
+	if data.run_over:
 		Cloud.submit_run(Net.local_name, data.rounds_cleared, data.total_scrap, data.crew_size)
 
 

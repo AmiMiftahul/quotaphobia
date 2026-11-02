@@ -62,7 +62,7 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)
@@ -124,11 +124,12 @@ def main():
                 print(f"PASS all machines built the same facility ({tag})")
 
         inserts = (Path(logs) / "mock.log").read_text().count("MOCK_INSERT")
-        if inserts == 3:
+        # One from each of the 3 players left in the session, and one from the days test's finished run.
+        if inserts == 4:
             passed += 1
-            print("PASS the database received one run from each of the 3 remaining players")
+            print("PASS the database received one record for each finished run")
         else:
-            failures.append(f"expected 3 database inserts, got {inserts}")
+            failures.append(f"expected 4 database inserts, got {inserts}")
 
         print(f"\n{passed} checks passed, {len(failures)} problems")
         for line in dict.fromkeys(failures):

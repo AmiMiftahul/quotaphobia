@@ -50,6 +50,7 @@ var current_animation := ""
 var model_name := ""
 
 var _pitch := 0.0
+var _backpack_model: MeshInstance3D
 var _phone_model: MeshInstance3D
 var _recording_light: MeshInstance3D
 var _phone_flash: OmniLight3D
@@ -104,6 +105,14 @@ func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3, skin:
 	_flashlight.position.y = 1.5
 	add_child(_flashlight)
 	_build_phone_model()
+	var pack := BoxMesh.new()
+	pack.size = Vector3(0.62, 0.72, 0.34)
+	pack.material = Level._material(Color(0.42, 0.28, 0.16))
+	_backpack_model = MeshInstance3D.new()
+	_backpack_model.mesh = pack
+	_backpack_model.position = Vector3(0.0, 0.95, 0.42)
+	_backpack_model.visible = false
+	add_child(_backpack_model)
 	NetSync.attach(self, [^":net_pos", ^":net_yaw"], [^":net_flashlight", ^":net_phone_up", ^":net_recording", ^":net_flashes"])
 
 
@@ -139,6 +148,8 @@ func _build_phone_model() -> void:
 
 
 func _process(delta: float) -> void:
+	# Other players can see when you've got something in your backpack.
+	_backpack_model.visible = not is_local_player and Session.items_held_by(peer_id).size() >= 2
 	if _flash_seconds > 0.0:
 		_flash_seconds -= delta
 		if _flash_seconds <= 0.0:
@@ -287,19 +298,28 @@ func _update_focus() -> void:
 	_focus_item = null
 	_focus_console = false
 	interact_prompt = ""
+	var carried := Session.items_held_by(peer_id)
+	var best_distance := Rules.INTERACT_RANGE
+	for item: Scrap in Session.scrap_root.get_children():
+		var distance := position.distance_to(item.position)
+		var offset := (item.position - position).normalized()
+		if item.holder_id == 0 and distance < best_distance and forward().dot(offset) > 0.4:
+			best_distance = distance
+			_focus_item = item
+	var lines := PackedStringArray()
 	var held := Session.item_held_by(peer_id)
 	if held != null:
-		interact_prompt = "%s: drop %s ($%d)" % [Settings.prompt_for("drop"), held.kind, held.value]
-	else:
-		var best_distance := Rules.INTERACT_RANGE
-		for item: Scrap in Session.scrap_root.get_children():
-			var distance := position.distance_to(item.position)
-			var offset := (item.position - position).normalized()
-			if item.holder_id == 0 and distance < best_distance and forward().dot(offset) > 0.4:
-				best_distance = distance
-				_focus_item = item
-		if _focus_item != null:
-			interact_prompt = "%s: pick up %s ($%d)" % [Settings.prompt_for("interact"), _focus_item.kind, _focus_item.value]
+		var drop_line := "%s: drop %s ($%d)" % [Settings.prompt_for("drop"), held.kind, held.value]
+		if carried.size() >= 2:
+			drop_line += "    %s: switch item" % Settings.prompt_for("cycle_item")
+		lines.append(drop_line)
+	if _focus_item != null:
+		if carried.size() >= Rules.CARRY_LIMIT:
+			lines.append("Your hands and backpack are full")
+			_focus_item = null
+		else:
+			lines.append("%s: pick up %s ($%d)" % [Settings.prompt_for("interact"), _focus_item.kind, _focus_item.value])
+	interact_prompt = "\n".join(lines)
 	if position.distance_to(Rules.CONSOLE_POS) < Rules.INTERACT_RANGE:
 		_focus_console = true
 		interact_prompt = "%s: launch the ship and end the round" % Settings.prompt_for("interact")
@@ -337,6 +357,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			Session.request_pickup.rpc_id(1, _focus_item.item_id)
 	elif event.is_action_pressed("drop"):
 		Session.request_drop.rpc_id(1)
+	elif event.is_action_pressed("cycle_item"):
+		Session.request_cycle_item.rpc_id(1)
 	elif event.is_action_pressed("phone"):
 		if phone.is_up:
 			phone.put_away()

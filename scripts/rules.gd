@@ -4,6 +4,10 @@ extends RefCounted
 
 const MAX_PLAYERS := 4
 const ROUND_SECONDS := 300.0
+const DAYS_PER_LEVEL := 4 # Each day is one trip. Miss the goal after the last one and the run ends.
+const CARRY_LIMIT := 6 # One in your hands, plus five in the backpack.
+const STOWED_WEIGHT_SHARE := 0.5 # A backpack carries weight better than your hands do.
+const MAX_CARRY_SLOWDOWN := 0.6 # However full, you can always still move at 40% speed.
 const RESULTS_SECONDS := 8.0
 const MONSTER_GRACE_SECONDS := 20.0
 
@@ -18,15 +22,20 @@ const MONSTER_ATTACK_COOLDOWN := 1.5
 const CONSOLE_POS := Vector3(0.0, 0.0, -13.5)
 
 
-## Scrap value the crew must bring back. More players means a higher target.
-static func quota(round_number: int, crew: int) -> int:
-	var base := 80.0 + 50.0 * (round_number - 1)
+## Scrap value the crew must bank within a level's days. More players means a higher target.
+static func quota(level: int, crew: int) -> int:
+	var base := 200.0 + 150.0 * (level - 1)
 	return int(round(base * (0.4 + 0.25 * crew)))
 
 
+## How tough a level's facilities are, which sets their size, scrap and threats.
+static func difficulty(level: int) -> int:
+	return level * 2 - 1
+
+
 ## The facility grows for the first few rounds, then stays at 8 x 8 rooms.
-static func grid_size(round_number: int) -> int:
-	return mini(4 + round_number, 8)
+static func grid_size(difficulty_level: int) -> int:
+	return mini(4 + difficulty_level, 8)
 
 
 ## The ship is the safe room at cell (0, -1): x in [-5, 5], z in [-15, -5].

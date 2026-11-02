@@ -14,6 +14,10 @@ var holder_id := 0:
 		if new_holder != holder_id and is_inside_tree():
 			Sfx.play_3d("pickup" if new_holder != 0 else "drop", position, -4.0, 18.0)
 		holder_id = new_holder
+var stowed := false: # In the holder's backpack, rather than their hands.
+	set(in_backpack):
+		stowed = in_backpack
+		visible = not in_backpack
 
 
 func setup(id: int, data: Dictionary) -> void:
@@ -28,7 +32,7 @@ func setup(id: int, data: Dictionary) -> void:
 	model.position.y = -0.25 - Assets.bounds(Assets.FACTORY % FacilityLayout.SCRAP_MODELS[kind]).position.y * MODEL_SCALE
 	add_child(model)
 	add_glow(model)
-	NetSync.attach(self, [], [^":position", ^":holder_id"])
+	NetSync.attach(self, [], [^":position", ^":holder_id", ^":stowed"])
 
 
 ## A faint warm glow, so scrap can be spotted in the dark.
@@ -44,7 +48,13 @@ func _process(_delta: float) -> void:
 	if holder_id == 0:
 		return
 	var holder := Session.player_node(holder_id)
-	if holder != null:
+	if holder == null:
+		return
+	if holder.is_local_player:
+		# Low and to the right, so your own item never blocks your view.
+		var right := holder.forward().cross(Vector3.UP)
+		position = holder.position + holder.forward() * 1.0 + right * 0.55 + Vector3(0, 1.1, 0)
+	else:
 		position = holder.position + holder.forward() * 0.6 + Vector3(0, 1.0, 0)
 
 

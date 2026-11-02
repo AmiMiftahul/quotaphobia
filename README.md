@@ -1,7 +1,7 @@
 # Scrap Shift
 
 A 1-4 player co-op game made with Godot 4.7. Land at an abandoned facility, carry
-scrap back to the ship, avoid the monster, meet the quota, and survive as long as you can.
+scrap back to the ship, avoid what hunts you, and reach each level's goal within 4 days.
 
 ## Controls
 
@@ -44,6 +44,18 @@ is remembered. Settings live in `scripts/autoload/settings.gd` and the screen in
 
 Controller defaults: left stick moves, right stick looks, A jumps, X picks up or uses, B drops,
 Y is the flashlight, RT sprints, Start pauses. In menus, LB and RB switch tabs and B goes back.
+
+## Levels, days and the backpack
+
+Each level has one money goal and up to **4 days** to reach it. A day is one trip, to a different
+map. Scrap you bank adds up across days. Reach the goal and the next, harder level starts straight
+away. Miss it after day 4 and the run ends. If the whole crew dies, that day and its scrap are lost,
+but the run carries on. Tune these in `scripts/rules.gd`.
+
+You can carry **6 items**: 1 in your hands and 5 in your backpack. **E** picks up, **G** drops the
+one in your hands, and **Q** switches which one that is (D-pad left on a controller). The bar at the
+bottom of the screen shows what you carry. A heavier load slows you down, though you can always
+move at 40% speed or better. If you die, everything you carry falls to the floor.
 
 ## The phone
 
