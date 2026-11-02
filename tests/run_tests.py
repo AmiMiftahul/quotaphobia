@@ -3,6 +3,7 @@
 fifth player) as separate game processes. Prints every problem it finds."""
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,7 +62,7 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", [])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)
@@ -92,6 +93,16 @@ def main():
 
         names = ["unit", *procs]
         passed = node_passed
+        # The saved video format, checked with Apple's own video framework where available.
+        if shutil.which("swift"):
+            check = subprocess.run(["swift", str(ROOT / "tests/check_video.swift"), str(Path(logs) / "test_clip.mov")],
+                                   capture_output=True, text=True, timeout=180)
+            found = re.search(r"VIDEO_OK duration=([\d.]+) size=(\d+x\d+) .*brightness=([\d.]+),([\d.]+),([\d.]+)", check.stdout)
+            if found and float(found[1]) == 5.0 and found[2] == "640x360" and float(found[3]) < float(found[4]) < float(found[5]):
+                passed += 1
+                print(f"PASS Apple's video framework plays the clip correctly: {check.stdout.strip()}")
+            else:
+                failures.append(f"video check failed: {check.stdout.strip()} {check.stderr.strip()[-500:]}")
         for name in names:
             text = read(logs, name)
             passed += len(re.findall(r"^PASS ", text, re.M))

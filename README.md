@@ -45,6 +45,17 @@ is remembered. Settings live in `scripts/autoload/settings.gd` and the screen in
 Controller defaults: left stick moves, right stick looks, A jumps, X picks up or uses, B drops,
 Y is the flashlight, RT sprints, Start pauses. In menus, LB and RB switch tabs and B goes back.
 
+## The phone
+
+Press **P** to raise your phone. **Left click** takes a photo with the flash, and **R** records
+5 seconds of video with no sound. Press **P** again to put it away. On a controller, use
+D-pad up, RB and LB. All of these can be rebound in Settings.
+
+Other players see the phone in your hand, the flash, and a red light while you record. Files
+only ever go on your own computer: choose **My photos and videos** on the main menu to open the
+folder. Photos are 1280 x 720 PNG files, and videos are 640 x 360 `.mov` files at 15 frames a
+second.
+
 ## Maps and creatures
 
 Each run visits the four maps in a random order, and threats grow as rounds pass. To change

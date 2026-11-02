@@ -28,6 +28,7 @@ func _ready() -> void:
 		"store_steam": await _store_steam()
 		"entities": await _entities()
 		"settings": await _settings()
+		"video": await _video()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
 	get_tree().quit(1 if fails > 0 else 0)
@@ -660,6 +661,7 @@ func _ui() -> void:
 	check("the monster patrols through several rooms (%d seen)" % rooms_seen.size(), rooms_seen.size() >= 2)
 	check("the monster stays inside the facility", stayed_inside)
 
+	await _ui_phone(main)
 	await _ui_settings(main)
 
 	# Pause menu.
@@ -776,6 +778,121 @@ func _pad_stick(axis: JoyAxis, amount: float) -> void:
 	event.axis_value = amount
 	Input.parse_input_event(event)
 	await get_tree().process_frame
+
+
+func _click(button: MouseButton) -> void:
+	for pressed: bool in [true, false]:
+		var event := InputEventMouseButton.new()
+		event.button_index = button
+		event.pressed = pressed
+		Input.parse_input_event(event)
+		await get_tree().process_frame
+		await get_tree().process_frame
+
+
+## The phone, using the real keys, and real saved files.
+func _ui_phone(main: Control) -> void:
+	var phone: PhoneCamera = me().phone
+	check("the phone starts put away", not phone.is_up and not main._phone_panel.visible)
+	var before_click := me().net_flashes
+	await _click(MOUSE_BUTTON_LEFT)
+	await _press(KEY_R)
+	await wait(0.2)
+	check("photo and record do nothing while it's put away", me().net_flashes == before_click and not phone.is_recording)
+	await _press(KEY_P)
+	await wait(0.5)
+	check("P raises the phone", phone.is_up and main._phone_panel.visible)
+	var hud_screen := get_viewport().get_visible_rect()
+	check("the phone fits on screen", hud_screen.encloses(main._phone_panel.get_global_rect()))
+	check("the phone shows how to use it", main._phone_status.text.contains("Left click") and main._phone_status.text.contains("R: record 5 s"))
+	await _shot("phone_up")
+
+	# A real photo, taken facing into the dark so the flash has something to do.
+	var standing_at := me().position
+	var facing := me().rotation.y
+	me().teleport(FacilityLayout.cell_center(Session.layout.monster_spawn) + Vector3(0, 0.1, 0))
+	await wait(0.3)
+	await RenderingServer.frame_post_draw
+	var unlit := _average_brightness(phone.texture().get_image())
+	await _click(MOUSE_BUTTON_LEFT)
+	check("left click takes a photo", await until(func() -> bool: return phone.last_saved_path.ends_with(".png"), 3.0))
+	var photo := Image.load_from_file(phone.last_saved_path)
+	var lit := _average_brightness(photo)
+	check("the flash really brightens the photo (%.3f to %.3f)" % [unlit, lit], lit > unlit * 1.1)
+	me().teleport(standing_at)
+	me().rotation.y = facing
+	check("the photo is a real 1280 x 720 image", photo != null and photo.get_size() == PhoneCamera.PHOTO_SIZE)
+	var colors := {}
+	for sample in 200:
+		colors[photo.get_pixel(sample * 6 % photo.get_width(), sample * 3 % photo.get_height())] = true
+	check("the photo isn't a blank picture (%d colours sampled)" % colors.size(), colors.size() > 10)
+	print("PHOTO %s" % phone.last_saved_path)
+	check("the flash fires", me().net_flashes == before_click + 1)
+	check("saving is confirmed", main._phone_toast.visible or await until(func() -> bool: return main._phone_toast.visible, 1.0))
+	await wait(0.2)
+	check("the HUD says the photo was saved", main._phone_toast.text == "Photo saved")
+
+	# Two photos in one second never overwrite each other.
+	var first_photo := phone.last_saved_path
+	await _click(MOUSE_BUTTON_LEFT)
+	await until(func() -> bool: return phone.last_saved_path != first_photo, 3.0)
+	check("a second photo gets its own file", phone.last_saved_path != first_photo and FileAccess.file_exists(first_photo) and FileAccess.file_exists(phone.last_saved_path))
+
+	# A real 5-second recording while moving, so the frames differ.
+	var fps_samples: Array[int] = []
+	await _press(KEY_R)
+	check("R starts recording", phone.is_recording and me().net_recording)
+	var flashes_during := me().net_flashes
+	await wait(0.3)
+	await _click(MOUSE_BUTTON_LEFT)
+	check("no photos during a recording", me().net_flashes == flashes_during)
+	await _shot("phone_recording")
+	check("the screen shows it's recording", main._phone_status.text.begins_with("REC"))
+	me().rotation.y = 0.0
+	var started_at := Time.get_ticks_msec()
+	while phone.is_recording and Time.get_ticks_msec() - started_at < 8000:
+		me().rotate_y(0.01)
+		fps_samples.append(Engine.get_frames_per_second())
+		await get_tree().process_frame
+	check("recording stops by itself", not phone.is_recording and not me().net_recording)
+	check("the recording lasted 5 seconds", is_equal_approx(phone.record_elapsed, 5.0))
+	check("a video file was saved", phone.last_saved_path.ends_with(".mov") and FileAccess.file_exists(phone.last_saved_path))
+	check("about 15 frames a second were captured (%d)" % phone.frames_captured, phone.frames_captured >= 60 and phone.frames_captured <= 78)
+	var slowest_fps: int = fps_samples.min() if not fps_samples.is_empty() else 0
+	print("PHONE_FPS slowest %d while recording" % slowest_fps)
+	check("the game stays smooth while recording (slowest %d fps)" % slowest_fps, slowest_fps >= 30)
+	print("VIDEO %s" % phone.last_saved_path)
+
+	# Putting the phone away mid-clip keeps what was filmed; a tiny clip isn't kept.
+	var full_clip := phone.last_saved_path
+	await _press(KEY_R)
+	await wait(1.5)
+	await _press(KEY_P)
+	check("putting the phone away stops recording", not phone.is_up and not phone.is_recording)
+	check("the part already filmed is saved", phone.last_saved_path != full_clip and phone.last_saved_path.ends_with(".mov"))
+	print("SHORT_VIDEO %s" % phone.last_saved_path)
+	var short_clip := phone.last_saved_path
+	await _press(KEY_P)
+	await _press(KEY_R)
+	await _press(KEY_P)
+	check("an accidental tap isn't saved", phone.last_saved_path == short_clip and phone.message == "Too short to keep")
+	check("the phone hides when put away", not main._phone_panel.visible or await until(func() -> bool: return not main._phone_panel.visible, 1.0))
+	# Without a folder chosen for the test, clean up what it filmed.
+	var folder := PhoneCamera.capture_folder()
+	if folder.ends_with("test_captures"):
+		for file_name in DirAccess.get_files_at(folder):
+			DirAccess.remove_absolute(folder.path_join(file_name))
+		DirAccess.remove_absolute(folder)
+
+
+func _average_brightness(image: Image) -> float:
+	var total := 0.0
+	var samples := 0
+	for y in range(0, image.get_height(), 40):
+		for x in range(0, image.get_width(), 40):
+			total += image.get_pixel(x, y).v
+			samples += 1
+	return total / samples
 
 
 ## The settings screen and everything it controls, with real input.
@@ -983,6 +1100,37 @@ func _ui_settings(main: Control) -> void:
 	check("prompts return to keyboard keys", not Settings.using_pad)
 	me().rotation.y = 0.0
 	me().teleport(Vector3(0, 0.1, -9.0))
+
+
+# --- Video files ------------------------------------------------------------------
+
+## Writes a clip with known contents, for Apple's video framework to check.
+func _video() -> void:
+	var path := ""
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("video="):
+			path = arg.trim_prefix("video=")
+	var frames: Array = []
+	var times := PackedFloat32Array()
+	for index in 75:
+		var image := Image.create(PhoneCamera.VIDEO_SIZE.x, PhoneCamera.VIDEO_SIZE.y, false, Image.FORMAT_RGB8)
+		image.fill(Color.from_hsv(0.0, 0.0, float(index) / 74.0))
+		frames.append(image.save_jpg_to_buffer(0.85))
+		times.append(index / 15.0)
+	var durations := PhoneCamera.durations_for(times, 5.0)
+	var total := 0
+	for ticks in durations:
+		total += ticks
+	check("frame timings add up to exactly 5 seconds", total == 5 * MovWriter.TIMESCALE)
+	var uneven := PhoneCamera.durations_for(PackedFloat32Array([0.0, 0.5, 0.6, 4.0]), 5.0)
+	var uneven_total := 0
+	for ticks in uneven:
+		uneven_total += ticks
+	check("timings stay true when frames arrive unevenly", uneven_total == 5 * MovWriter.TIMESCALE and uneven[0] == 300)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	file.store_buffer(MovWriter.build(frames, durations, PhoneCamera.VIDEO_SIZE.x, PhoneCamera.VIDEO_SIZE.y))
+	file.close()
+	check("a test clip was written", FileAccess.get_file_as_bytes(path).size() > 1000)
 
 
 # --- Settings: saving, safety limits and rebinding rules ------------------------
@@ -1489,6 +1637,25 @@ func _scenario() -> void:
 	check("round 2 is the next map", Session.map_id == "reactor")
 	check("round 2's residents appear for everyone", await until(func() -> bool: return Session.entity_root.get_child_count() == Session.layout.entity_spawns.size()))
 	await barrier("round2", 3)
+
+	# A phone being used is seen by everyone.
+	if idx == 1:
+		me().phone.raise()
+		me().phone.start_recording()
+		me().phone.take_photo()
+		me().net_flashes += 1
+	var filmer := Session.player_node(bot1)
+	check("everyone sees a phone being held up", await until(func() -> bool: return filmer.net_phone_up))
+	check("everyone sees the recording light", await until(func() -> bool: return filmer.net_recording))
+	check("everyone sees the camera flash", await until(func() -> bool: return filmer.net_flashes >= 1))
+	if idx != 1:
+		check("other players see the phone model", filmer._phone_model.visible and filmer._recording_light.visible)
+	await barrier("phone_seen", 3)
+	if idx == 1:
+		check("a player's own body doesn't show their phone", not me()._phone_model.visible)
+		me().phone.put_away()
+	check("everyone sees the phone put away", await until(func() -> bool: return not filmer.net_phone_up and not filmer.net_recording))
+	await barrier("phone_away", 3)
 
 	# A helper's state reaches everyone.
 	if role == "host":

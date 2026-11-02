@@ -11,6 +11,7 @@ const STAMINA_DRAIN := 0.25
 const STAMINA_REGEN := 0.15
 const MOUSE_SENSITIVITY := 0.0025
 const MAX_PITCH := 1.4
+const FLASH_SECONDS := 0.15
 const MODELS := ["character-male-a", "character-female-c", "character-male-d", "character-female-e"]
 const MODEL_SCALE := 2.4
 const STEP_DISTANCE := 2.2
@@ -21,6 +22,26 @@ var color_index := 0
 var net_pos := Vector3.ZERO
 var net_yaw := 0.0
 var net_flashlight := true
+var net_phone_up := false:
+	set(up):
+		net_phone_up = up
+		if _phone_model != null:
+			_phone_model.visible = up and not is_local_player
+var net_recording := false:
+	set(recording):
+		net_recording = recording
+		if _recording_light != null:
+			_recording_light.visible = recording
+var net_flashes := 0:
+	set(count):
+		if count != net_flashes and is_inside_tree():
+			_flash_seconds = FLASH_SECONDS
+			_phone_flash.visible = true
+			if not is_local_player:
+				Sfx.play_3d("click", position, -2.0, 18.0)
+		net_flashes = count
+var phone: PhoneCamera
+var is_local_player := false
 var stamina := 1.0
 var interact_prompt := ""
 var input_enabled := true
@@ -29,6 +50,10 @@ var current_animation := ""
 var model_name := ""
 
 var _pitch := 0.0
+var _phone_model: MeshInstance3D
+var _recording_light: MeshInstance3D
+var _phone_flash: OmniLight3D
+var _flash_seconds := 0.0
 var _camera: Camera3D
 var _flashlight: SpotLight3D
 var _body: Node3D
@@ -78,10 +103,50 @@ func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3, skin:
 	_flashlight.light_energy = 3.5
 	_flashlight.position.y = 1.5
 	add_child(_flashlight)
-	NetSync.attach(self, [^":net_pos", ^":net_yaw"], [^":net_flashlight"])
+	_build_phone_model()
+	NetSync.attach(self, [^":net_pos", ^":net_yaw"], [^":net_flashlight", ^":net_phone_up", ^":net_recording", ^":net_flashes"])
+
+
+## What other players see: a phone held up, a red dot while recording, and the flash.
+func _build_phone_model() -> void:
+	var body := BoxMesh.new()
+	body.size = Vector3(0.34, 0.2, 0.03)
+	body.material = Level._material(Color(0.06, 0.06, 0.08))
+	_phone_model = MeshInstance3D.new()
+	_phone_model.mesh = body
+	_phone_model.position = Vector3(0.0, 1.35, -0.55)
+	_phone_model.visible = false
+	add_child(_phone_model)
+	var dot := SphereMesh.new()
+	dot.radius = 0.03
+	dot.height = 0.06
+	var red := StandardMaterial3D.new()
+	red.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	red.albedo_color = Color.RED
+	dot.material = red
+	_recording_light = MeshInstance3D.new()
+	_recording_light.mesh = dot
+	_recording_light.position = Vector3(0.12, 0.05, -0.03)
+	_recording_light.visible = false
+	_phone_model.add_child(_recording_light)
+	_phone_flash = OmniLight3D.new()
+	_phone_flash.light_color = Color(1.0, 0.98, 0.9)
+	_phone_flash.light_energy = 5.0
+	_phone_flash.omni_range = 14.0
+	_phone_flash.position = Vector3(0.0, 1.6, -0.7)
+	_phone_flash.visible = false
+	add_child(_phone_flash)
+
+
+func _process(delta: float) -> void:
+	if _flash_seconds > 0.0:
+		_flash_seconds -= delta
+		if _flash_seconds <= 0.0:
+			_phone_flash.visible = false
 
 
 func _ready() -> void:
+	is_local_player = is_local()
 	if not is_local():
 		return
 	_body.visible = false
@@ -95,11 +160,19 @@ func _ready() -> void:
 	_flashlight.position = Vector3(0.25, -0.2, 0.0)
 	_apply_settings()
 	Settings.changed.connect(_apply_settings)
+	phone = PhoneCamera.new()
+	phone.name = "Phone"
+	add_child(phone)
+	phone.setup(self)
 
 
 func _apply_settings() -> void:
 	_camera.fov = Settings.value("fov")
 	_flashlight.shadow_enabled = Settings.value("shadows")
+
+
+func eye_transform() -> Transform3D:
+	return _camera.global_transform
 
 
 func is_local() -> bool:
@@ -132,6 +205,7 @@ func _physics_process(delta: float) -> void:
 		_animate_and_step(delta)
 		return
 	if not is_alive():
+		phone.put_away()
 		_flashlight.visible = false
 		interact_prompt = "You died. Press %s to watch a crewmate." % Settings.prompt_for("jump")
 		_follow_teammate()
@@ -263,6 +337,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			Session.request_pickup.rpc_id(1, _focus_item.item_id)
 	elif event.is_action_pressed("drop"):
 		Session.request_drop.rpc_id(1)
+	elif event.is_action_pressed("phone"):
+		if phone.is_up:
+			phone.put_away()
+		else:
+			phone.raise()
+	elif event.is_action_pressed("phone_photo") and phone.is_up:
+		phone.take_photo()
+	elif event.is_action_pressed("phone_record") and phone.is_up:
+		phone.start_recording()
 	elif event.is_action_pressed("flashlight"):
 		net_flashlight = not net_flashlight
 		_flashlight.visible = net_flashlight

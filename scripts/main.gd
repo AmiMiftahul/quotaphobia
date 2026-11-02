@@ -22,6 +22,10 @@ var _crosshair: Label
 var _health_bar: ProgressBar
 var _stamina_bar: ProgressBar
 var _results_label: Label
+var _phone_panel: PanelContainer
+var _phone_view: TextureRect
+var _phone_status: Label
+var _phone_toast: Label
 var _settings_menu: SettingsMenu
 var _settings_open := false
 var _paused := false
@@ -80,8 +84,36 @@ func _process(_delta: float) -> void:
 	if player != null:
 		_prompt_label.text = player.interact_prompt
 		_stamina_bar.value = player.stamina
+	_update_phone(player)
 	var state: Dictionary = Session.player_states.get(Net.my_id(), {"hp": 0})
 	_health_bar.value = state.hp
+
+
+func _update_phone(player: Player) -> void:
+	var phone: PhoneCamera = player.phone if player != null else null
+	_phone_panel.visible = phone != null and phone.is_up
+	_phone_toast.visible = phone != null and phone.message_seconds > 0.0
+	if phone == null:
+		return
+	_phone_toast.text = phone.message
+	if not phone.is_up:
+		return
+	if _phone_view.texture == null or _phone_view.texture != phone.texture():
+		_phone_view.texture = phone.texture()
+	if phone.is_recording:
+		_phone_status.text = "REC  %.1f / %.0f s" % [phone.record_elapsed, PhoneCamera.RECORD_SECONDS]
+		_phone_status.add_theme_color_override("font_color", Color(1.0, 0.3, 0.25))
+	else:
+		_phone_status.text = "%s: photo    %s: record %.0f s    %s: put away" % [
+			Settings.prompt_for("phone_photo"), Settings.prompt_for("phone_record"),
+			PhoneCamera.RECORD_SECONDS, Settings.prompt_for("phone")]
+		_phone_status.remove_theme_color_override("font_color")
+
+
+func _open_captures_folder() -> void:
+	var folder := PhoneCamera.capture_folder()
+	DirAccess.make_dir_recursive_absolute(folder)
+	OS.shell_open(folder)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -318,6 +350,7 @@ func _build_menu() -> void:
 	_button(box, "Join a game", _on_join_pressed)
 	_shop_button = _button(box, "Shop", _on_shop_pressed)
 	_menu_settings_button = _button(box, "Settings", _open_settings)
+	_button(box, "My photos and videos", _open_captures_folder)
 	_button(box, "Quit", get_tree().quit)
 	_menu_status = _label(box, "")
 	_board_label = _label(box, "Loading leaderboard...", 14)
@@ -367,9 +400,42 @@ func _build_hud() -> void:
 	_crosshair.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	_crosshair.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_crosshair.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_build_phone_panel()
 	_health_bar = _bar(Vector2(20, -70), Rules.PLAYER_MAX_HP, Color(0.8, 0.2, 0.2))
 	_stamina_bar = _bar(Vector2(20, -40), 1.0, Color(0.3, 0.7, 0.3))
 	_stamina_bar.step = 0.01
+
+
+func _build_phone_panel() -> void:
+	_phone_panel = PanelContainer.new()
+	_phone_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var casing := StyleBoxFlat.new()
+	casing.bg_color = Color(0.04, 0.04, 0.05)
+	casing.set_corner_radius_all(14)
+	casing.set_content_margin_all(10)
+	_phone_panel.add_theme_stylebox_override("panel", casing)
+	_hud.add_child(_phone_panel)
+	var box := VBoxContainer.new()
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_phone_panel.add_child(box)
+	_phone_view = TextureRect.new()
+	_phone_view.custom_minimum_size = Vector2(400, 225)
+	_phone_view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_phone_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(_phone_view)
+	_phone_status = _label(box, "", 14)
+	_phone_status.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_phone_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_phone_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
+	_phone_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_phone_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_phone_panel.visible = false
+	_phone_toast = _label(_hud, "", 20)
+	_phone_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_phone_toast.anchor_right = 1.0
+	_phone_toast.anchor_top = 0.08
+	_phone_toast.anchor_bottom = 0.08
+	_phone_toast.visible = false
 
 
 func _bar(at: Vector2, maximum: float, color: Color) -> ProgressBar:
