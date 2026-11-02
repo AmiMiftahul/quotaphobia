@@ -12,6 +12,7 @@ const DEFAULT_PORT := 24567
 var players := {} # peer id -> display name
 var skins := {} # peer id -> equipped product id
 var local_name := "Player"
+var listen_port := DEFAULT_PORT # Tests use their own, so they never collide with a real game.
 var rejected_count := 0
 
 var _reject_reason := ""
@@ -32,7 +33,9 @@ func is_online() -> bool:
 	return not multiplayer.multiplayer_peer is OfflineMultiplayerPeer
 
 
-func host(player_name: String, port: int = DEFAULT_PORT) -> Error:
+func host(player_name: String, port: int = 0) -> Error:
+	if port == 0:
+		port = listen_port
 	var peer := ENetMultiplayerPeer.new()
 	# One slot above the crew size, so a fifth player can be told why they can't join.
 	var error := peer.create_server(port, Rules.MAX_PLAYERS)

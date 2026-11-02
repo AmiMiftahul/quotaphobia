@@ -10,6 +10,7 @@ const GRAVITY := 12.0
 const STAMINA_DRAIN := 0.25
 const STAMINA_REGEN := 0.15
 const MOUSE_SENSITIVITY := 0.0025
+const MAX_PITCH := 1.4
 const MODELS := ["character-male-a", "character-female-c", "character-male-d", "character-female-e"]
 const MODEL_SCALE := 2.4
 const STEP_DISTANCE := 2.2
@@ -92,7 +93,13 @@ func _ready() -> void:
 	_camera.make_current()
 	_flashlight.reparent(_camera, false)
 	_flashlight.position = Vector3(0.25, -0.2, 0.0)
-	_flashlight.shadow_enabled = true
+	_apply_settings()
+	Settings.changed.connect(_apply_settings)
+
+
+func _apply_settings() -> void:
+	_camera.fov = Settings.value("fov")
+	_flashlight.shadow_enabled = Settings.value("shadows")
 
 
 func is_local() -> bool:
@@ -126,9 +133,10 @@ func _physics_process(delta: float) -> void:
 		return
 	if not is_alive():
 		_flashlight.visible = false
-		interact_prompt = "You died. Press Space to watch a crewmate."
+		interact_prompt = "You died. Press %s to watch a crewmate." % Settings.prompt_for("jump")
 		_follow_teammate()
 		return
+	_look_with_stick(delta)
 	_move(delta)
 	_update_focus()
 	net_pos = position
@@ -162,6 +170,24 @@ func _play_animation(animation_name: String) -> void:
 		_animator.play(animation_name, 0.15)
 
 
+func _look_with_stick(delta: float) -> void:
+	if not input_enabled or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		return
+	var stick := Input.get_vector("look_left", "look_right", "look_up", "look_down")
+	if stick == Vector2.ZERO:
+		return
+	var speed: float = Settings.BASE_LOOK_SPEED * Settings.value("pad_sensitivity") * delta
+	var vertical: float = -stick.y if Settings.value("pad_invert_y") else stick.y
+	_turn(stick.x * speed, vertical * speed)
+
+
+## Both in radians: positive looks right, and positive looks down.
+func _turn(right: float, down: float) -> void:
+	rotate_y(-right)
+	_pitch = clampf(_pitch - down, -MAX_PITCH, MAX_PITCH)
+	_camera.rotation.x = _pitch
+
+
 func _move(delta: float) -> void:
 	var move := bot_move
 	var can_act := input_enabled and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
@@ -189,7 +215,7 @@ func _update_focus() -> void:
 	interact_prompt = ""
 	var held := Session.item_held_by(peer_id)
 	if held != null:
-		interact_prompt = "G: drop %s ($%d)" % [held.kind, held.value]
+		interact_prompt = "%s: drop %s ($%d)" % [Settings.prompt_for("drop"), held.kind, held.value]
 	else:
 		var best_distance := Rules.INTERACT_RANGE
 		for item: Scrap in Session.scrap_root.get_children():
@@ -199,10 +225,10 @@ func _update_focus() -> void:
 				best_distance = distance
 				_focus_item = item
 		if _focus_item != null:
-			interact_prompt = "E: pick up %s ($%d)" % [_focus_item.kind, _focus_item.value]
+			interact_prompt = "%s: pick up %s ($%d)" % [Settings.prompt_for("interact"), _focus_item.kind, _focus_item.value]
 	if position.distance_to(Rules.CONSOLE_POS) < Rules.INTERACT_RANGE:
 		_focus_console = true
-		interact_prompt = "E: launch the ship and end the round"
+		interact_prompt = "%s: launch the ship and end the round" % Settings.prompt_for("interact")
 
 
 func _follow_teammate() -> void:
@@ -227,9 +253,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		return
 	if event is InputEventMouseMotion:
-		rotate_y(-event.relative.x * MOUSE_SENSITIVITY)
-		_pitch = clampf(_pitch - event.relative.y * MOUSE_SENSITIVITY, -1.4, 1.4)
-		_camera.rotation.x = _pitch
+		var sensitivity: float = MOUSE_SENSITIVITY * Settings.value("mouse_sensitivity")
+		var vertical: float = -event.relative.y if Settings.value("invert_y") else event.relative.y
+		_turn(event.relative.x * sensitivity, vertical * sensitivity)
 	elif event.is_action_pressed("interact"):
 		if _focus_console:
 			Session.request_launch.rpc_id(1)

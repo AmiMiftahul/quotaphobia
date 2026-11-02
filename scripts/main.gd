@@ -22,7 +22,11 @@ var _crosshair: Label
 var _health_bar: ProgressBar
 var _stamina_bar: ProgressBar
 var _results_label: Label
-var _volume_sliders: Array[HSlider] = []
+var _settings_menu: SettingsMenu
+var _settings_open := false
+var _paused := false
+var _pause_settings_button: Button
+var _menu_settings_button: Button
 var _shop: PanelContainer
 var _shop_button: Button
 var _shop_list: VBoxContainer
@@ -44,6 +48,10 @@ func _ready() -> void:
 	_build_pause()
 	_build_results()
 	_build_shop()
+	_settings_menu = SettingsMenu.new()
+	_settings_menu.visible = false
+	_settings_menu.closed.connect(_close_settings)
+	add_child(_settings_menu)
 	Store.changed.connect(_refresh_shop)
 	Store.order_changed.connect(_refresh_order)
 	Net.players_changed.connect(_refresh)
@@ -67,6 +75,7 @@ func _process(_delta: float) -> void:
 	_banner_label.text = "%s\n%s\n%s" % [theme.name.to_upper(), theme.tagline, theme.rule]
 	_hint_label.visible = Session.hint_seconds > 0.0
 	_hint_label.text = Session.hint_text
+	_crosshair.visible = Settings.value("crosshair")
 	var player := Session.player_node(Net.my_id())
 	if player != null:
 		_prompt_label.text = player.interact_prompt
@@ -76,25 +85,26 @@ func _process(_delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event.is_action_pressed("ui_cancel") and Session.phase == Session.Phase.PLAYING:
-		_pause.visible = not _pause.visible
-		_update_mouse()
-	elif event is InputEventMouseButton and event.pressed and _hud.visible and not _pause.visible:
+	if event.is_action_pressed("pause") and Session.phase == Session.Phase.PLAYING and not _settings_open:
+		_set_paused(not _paused)
+	elif event is InputEventMouseButton and event.pressed and _hud.visible and not _paused:
 		_update_mouse()
 
 
 func _refresh() -> void:
 	var online := Net.is_online()
 	var phase := Session.phase
-	_menu.visible = not online and not _shop_open
+	_menu.visible = not online and not _shop_open and not _settings_open
 	_shop.visible = not online and _shop_open and not Store.order.has("status")
+	_settings_menu.visible = _settings_open
 	_qr_panel.visible = not online and _shop_open and Store.order.has("status")
 	_shop_button.visible = Store.payments_allowed()
 	_lobby.visible = online and phase == Session.Phase.LOBBY
 	_hud.visible = online and phase == Session.Phase.PLAYING
 	_results.visible = online and (phase == Session.Phase.RESULTS or phase == Session.Phase.GAME_OVER)
 	if phase != Session.Phase.PLAYING or not online:
-		_pause.visible = false
+		_paused = false
+	_pause.visible = _paused and not _settings_open
 	var lines := PackedStringArray()
 	var peers: Array = Net.players.keys()
 	peers.sort()
@@ -103,11 +113,49 @@ func _refresh() -> void:
 	_lobby_list.text = "\n".join(lines) if not lines.is_empty() else "Joining..."
 	_start_button.visible = online and multiplayer.is_server()
 	_update_mouse()
+	_update_focus()
+
+
+func _set_paused(paused: bool) -> void:
+	_paused = paused
+	_refresh()
 
 
 func _update_mouse() -> void:
-	var in_game := _hud.visible and not _pause.visible
+	var in_game := _hud.visible and not _paused and not _settings_open
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if in_game else Input.MOUSE_MODE_VISIBLE
+
+
+## Keeps controller and keyboard focus on the open menu, and off everything in play.
+func _update_focus() -> void:
+	var owner_control := get_viewport().gui_get_focus_owner()
+	if _settings_open:
+		if owner_control == null or not owner_control.is_visible_in_tree() or not _settings_menu.is_ancestor_of(owner_control):
+			_settings_menu.focus_first()
+		return
+	var panel: Control = null
+	for candidate: Control in [_menu, _lobby, _pause, _shop, _qr_panel]:
+		if candidate.visible:
+			panel = candidate
+	if panel == null:
+		get_viewport().gui_release_focus()
+	elif owner_control == null or not panel.is_ancestor_of(owner_control):
+		var buttons := panel.find_children("*", "Button", true, false)
+		for button: Button in buttons:
+			if button.is_visible_in_tree():
+				button.grab_focus()
+				break
+
+
+func _open_settings() -> void:
+	_settings_open = true
+	_refresh()
+
+
+func _close_settings() -> void:
+	_settings_open = false
+	get_viewport().gui_release_focus()
+	_refresh()
 
 
 func _on_host_pressed() -> void:
@@ -251,29 +299,6 @@ func _button(parent: Node, text: String, action: Callable) -> Button:
 	return button
 
 
-func _volume_slider(parent: Node) -> HSlider:
-	_label(parent, "Volume")
-	var slider := HSlider.new()
-	slider.max_value = 1.0
-	slider.step = 0.05
-	slider.value = Sfx.volume
-	slider.value_changed.connect(_on_volume_changed)
-	slider.drag_ended.connect(_on_volume_drag_ended.unbind(1))
-	parent.add_child(slider)
-	_volume_sliders.append(slider)
-	return slider
-
-
-func _on_volume_changed(value: float) -> void:
-	Sfx.set_volume(value)
-	for slider in _volume_sliders:
-		slider.set_value_no_signal(value)
-
-
-func _on_volume_drag_ended() -> void:
-	Sfx.save_volume()
-
-
 func _build_menu() -> void:
 	var parts := _panel()
 	_menu = parts[0]
@@ -292,7 +317,7 @@ func _build_menu() -> void:
 	box.add_child(_address_edit)
 	_button(box, "Join a game", _on_join_pressed)
 	_shop_button = _button(box, "Shop", _on_shop_pressed)
-	_volume_slider(box)
+	_menu_settings_button = _button(box, "Settings", _open_settings)
 	_button(box, "Quit", get_tree().quit)
 	_menu_status = _label(box, "")
 	_board_label = _label(box, "Loading leaderboard...", 14)
@@ -368,10 +393,8 @@ func _build_pause() -> void:
 	_pause = parts[0]
 	var box: VBoxContainer = parts[1]
 	_label(box, "Paused (the shift keeps running)", 22)
-	_volume_slider(box)
-	_button(box, "Resume", func() -> void:
-		_pause.visible = false
-		_update_mouse())
+	_button(box, "Resume", _set_paused.bind(false))
+	_pause_settings_button = _button(box, "Settings", _open_settings)
 	_button(box, "Leave game", Net.leave)
 
 

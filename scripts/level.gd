@@ -20,6 +20,7 @@ var _batches := {} # [path, tint] -> Array[Transform3D]
 var _flicker_lights: Array[OmniLight3D] = []
 var _flicker_time := 0.0
 var _theme: Dictionary
+var environment: Environment
 var _ambience_timer := AMBIENCE_MIN_SECONDS
 var _ambience_cells: Array[Vector2i] = []
 
@@ -232,9 +233,17 @@ func _add_environment() -> void:
 	env.fog_enabled = true
 	env.fog_light_color = _theme.fog_color
 	env.fog_density = _theme.fog_density
+	env.adjustment_enabled = true
+	environment = env
+	_apply_brightness()
+	Settings.changed.connect(_apply_brightness)
 	var world_env := WorldEnvironment.new()
 	world_env.environment = env
 	add_child(world_env)
+
+
+func _apply_brightness() -> void:
+	environment.adjustment_brightness = Settings.value("brightness")
 
 
 static func _material(color: Color) -> StandardMaterial3D:

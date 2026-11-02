@@ -2,7 +2,6 @@ extends Node
 ## All game audio. Every sound goes through here, so one call plays a random
 ## variation, and the tests can count which sounds each machine triggered.
 
-const SETTINGS_FILE := "user://settings.cfg"
 const BANKS := {
 	"step": ["footstep_concrete", 0, 4],
 	"pickup": ["impactMetal_light", 0, 4],
@@ -34,7 +33,6 @@ const AMBIENT_PATH := "res://assets/audio/ambient_hum.wav"
 const SHIP_HUM_PATH := "res://assets/audio/spaceEngineLow_000.ogg"
 
 var play_count := {}
-var volume := 0.8
 
 var _streams := {}
 var _ambient: AudioStreamPlayer
@@ -55,11 +53,8 @@ func _ready() -> void:
 	_ambient = AudioStreamPlayer.new()
 	_ambient.stream = hum
 	_ambient.volume_db = -14.0
+	_ambient.bus = "Music"
 	add_child(_ambient)
-	var file := ConfigFile.new()
-	if file.load(SETTINGS_FILE) == OK:
-		volume = file.get_value("audio", "volume", volume)
-	set_volume(volume)
 
 
 func play_2d(bank: String, volume_db: float = 0.0) -> void:
@@ -69,6 +64,7 @@ func play_2d(bank: String, volume_db: float = 0.0) -> void:
 	var player := AudioStreamPlayer.new()
 	player.stream = stream
 	player.volume_db = volume_db
+	player.bus = "SFX"
 	player.finished.connect(player.queue_free)
 	add_child(player)
 	player.play()
@@ -81,6 +77,7 @@ func play_3d(bank: String, pos: Vector3, volume_db: float = 0.0, max_distance: f
 	var player := AudioStreamPlayer3D.new()
 	player.stream = stream
 	player.volume_db = volume_db
+	player.bus = "SFX"
 	player.max_distance = max_distance
 	player.position = pos
 	player.finished.connect(player.queue_free)
@@ -97,18 +94,6 @@ func set_ambient(on: bool, pitch: float = 1.0) -> void:
 		_ambient.stop()
 
 
-func set_volume(linear: float) -> void:
-	volume = clampf(linear, 0.0, 1.0)
-	AudioServer.set_bus_volume_db(0, linear_to_db(maxf(volume, 0.0001)))
-	AudioServer.set_bus_mute(0, volume <= 0.0)
-
-
-func save_volume() -> void:
-	var file := ConfigFile.new()
-	file.set_value("audio", "volume", volume)
-	file.save(SETTINGS_FILE)
-
-
 ## A looping engine sound for the ship, so you can find it by ear.
 func make_ship_hum(pos: Vector3) -> AudioStreamPlayer3D:
 	var stream: AudioStreamOggVorbis = load(SHIP_HUM_PATH).duplicate()
@@ -117,6 +102,7 @@ func make_ship_hum(pos: Vector3) -> AudioStreamPlayer3D:
 	player.stream = stream
 	player.position = pos
 	player.volume_db = -24.0
+	player.bus = "SFX"
 	player.max_distance = 16.0
 	player.autoplay = not _silent
 	return player

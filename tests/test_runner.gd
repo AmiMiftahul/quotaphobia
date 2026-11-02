@@ -27,6 +27,7 @@ func _ready() -> void:
 		"store": await _store()
 		"store_steam": await _store_steam()
 		"entities": await _entities()
+		"settings": await _settings()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
 	get_tree().quit(1 if fails > 0 else 0)
@@ -509,6 +510,7 @@ func _press(keycode: Key) -> void:
 
 
 func _ui() -> void:
+	Net.listen_port = port
 	var main: Control = load("res://scenes/main.tscn").instantiate()
 	add_child(main)
 	await _shot("1_menu")
@@ -626,9 +628,9 @@ func _ui() -> void:
 		loudest = maxf(loudest, AudioServer.get_bus_peak_volume_left_db(0, 0))
 		await get_tree().process_frame
 	check("sound really reaches the audio output (peak %.0f dB)" % loudest, loudest > -50.0)
-	Sfx.set_volume(0.5)
+	Settings.set_value("master", 0.5)
 	check("volume setting changes the output", is_equal_approx(db_to_linear(AudioServer.get_bus_volume_db(0)), 0.5))
-	Sfx.set_volume(0.8)
+	Settings.set_value("master", 0.8)
 
 	# A player can physically walk out of the ship's door, and back in.
 	me().rotation.y = PI
@@ -657,6 +659,8 @@ func _ui() -> void:
 	monster.enabled = false
 	check("the monster patrols through several rooms (%d seen)" % rooms_seen.size(), rooms_seen.size() >= 2)
 	check("the monster stays inside the facility", stayed_inside)
+
+	await _ui_settings(main)
 
 	# Pause menu.
 	await _press(KEY_ESCAPE)
@@ -756,6 +760,346 @@ func _ui() -> void:
 	check("leaving Play now returns to the menu", main._menu.visible)
 
 
+func _pad_button(button: JoyButton) -> void:
+	for pressed: bool in [true, false]:
+		var event := InputEventJoypadButton.new()
+		event.button_index = button
+		event.pressed = pressed
+		Input.parse_input_event(event)
+		await get_tree().process_frame
+		await get_tree().process_frame
+
+
+func _pad_stick(axis: JoyAxis, amount: float) -> void:
+	var event := InputEventJoypadMotion.new()
+	event.axis = axis
+	event.axis_value = amount
+	Input.parse_input_event(event)
+	await get_tree().process_frame
+
+
+## The settings screen and everything it controls, with real input.
+func _ui_settings(main: Control) -> void:
+	await _press(KEY_ESCAPE)
+	main._pause_settings_button.pressed.emit()
+	await wait(0.2)
+	var menu: SettingsMenu = main._settings_menu
+	check("settings open from the pause menu", menu.visible and not main._pause.visible)
+	check("the mouse is free in settings", Input.mouse_mode == Input.MOUSE_MODE_VISIBLE)
+	check("settings has five tabs", menu.tabs.get_tab_count() == 5)
+	var screen := get_viewport().get_visible_rect()
+	check("settings fits on screen", screen.encloses(menu.get_global_rect()))
+	for index in menu.tabs.get_tab_count():
+		menu.tabs.current_tab = index
+		await _shot("settings_%s" % menu.tabs.get_tab_title(index).to_lower())
+		check("the %s tab fits on screen" % menu.tabs.get_tab_title(index), screen.encloses(menu.get_global_rect()))
+
+	# Rebinding a key with a real key press, and cancelling.
+	menu.tabs.current_tab = 2
+	await wait(0.1)
+	menu._bind_buttons["interact/keyboard"].pressed.emit()
+	check("a rebind waits for a key", menu.capturing_action == "interact" and menu._bind_buttons["interact/keyboard"].text.contains("Press"))
+	await _press(KEY_ESCAPE)
+	check("Esc cancels a rebind without closing settings", menu.capturing_action == "" and menu.visible and Settings.keys.interact == Settings.DEFAULT_KEYS.interact)
+	menu._bind_buttons["interact/keyboard"].pressed.emit()
+	await _press(KEY_T)
+	check("pressing a key rebinds it", Settings.keys.interact == "key:%d" % KEY_T and menu._bind_buttons["interact/keyboard"].text == "T")
+
+	# Esc steps back one menu at a time.
+	await _press(KEY_ESCAPE)
+	check("Esc leaves settings for the pause menu", not menu.visible and main._pause.visible)
+	await _press(KEY_ESCAPE)
+	check("Esc again returns to the game", not main._pause.visible and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+
+	# The new key really works, and the old one doesn't. The prompt follows.
+	var item: Scrap = free_items_outside_ship()[0]
+	me().rotation.y = 0.0
+	me().teleport(Vector3(item.position.x, 0.1, item.position.z + 1.5))
+	await wait(0.3)
+	check("the prompt shows the new key", me().interact_prompt.begins_with("T: pick up"))
+	await _press(KEY_E)
+	await wait(0.2)
+	check("the old key no longer works", item.holder_id == 0)
+	await _press(KEY_T)
+	check("the new key works", await until(func() -> bool: return item.holder_id == 1, 2.0))
+	await _press(KEY_G)
+	await until(func() -> bool: return item.holder_id == 0, 2.0)
+	Settings.rebind("interact", "keyboard", Settings.DEFAULT_KEYS.interact)
+
+	# Mouse sensitivity and invert.
+	var motion := InputEventMouseMotion.new()
+	motion.relative = Vector2(100, 0)
+	me().rotation.y = 0.0
+	Input.parse_input_event(motion)
+	await wait(0.1)
+	var normal_turn := absf(me().rotation.y)
+	Settings.set_value("mouse_sensitivity", 2.0)
+	me().rotation.y = 0.0
+	Input.parse_input_event(motion)
+	await wait(0.1)
+	check("mouse sensitivity changes turning speed", is_equal_approx(absf(me().rotation.y), normal_turn * 2.0))
+	Settings.set_value("mouse_sensitivity", 1.0)
+	var nod := InputEventMouseMotion.new()
+	nod.relative = Vector2(0, 50)
+	me()._turn(0.0, -me()._pitch)
+	Input.parse_input_event(nod)
+	await wait(0.1)
+	var normal_pitch: float = me()._pitch
+	Settings.set_value("invert_y", true)
+	me()._turn(0.0, normal_pitch)
+	Input.parse_input_event(nod)
+	await wait(0.1)
+	check("invert mouse flips looking up and down", normal_pitch < 0.0 and me()._pitch > 0.0)
+	Settings.set_value("invert_y", false)
+	me()._turn(0.0, me()._pitch)
+
+	# Display and gameplay settings reach the game.
+	Settings.set_value("fov", 95.0)
+	check("field of view reaches the camera", is_equal_approx(me()._camera.fov, 95.0))
+	await _shot("fov_95")
+	Settings.set_value("fov", 75.0)
+	Settings.set_value("brightness", 1.4)
+	check("brightness reaches the picture", is_equal_approx(Session.level.environment.adjustment_brightness, 1.4))
+	await _shot("brightness_140")
+	Settings.set_value("brightness", 1.0)
+	Settings.set_value("shadows", false)
+	check("flashlight shadows can be turned off", not me()._flashlight.shadow_enabled)
+	Settings.set_value("shadows", true)
+	Settings.set_value("render_scale", 0.5)
+	check("render quality reaches the renderer", is_equal_approx(get_tree().root.scaling_3d_scale, 0.5))
+	await _shot("render_50")
+	Settings.set_value("render_scale", 1.0)
+	Settings.set_value("msaa", 4)
+	check("anti-aliasing reaches the renderer", get_tree().root.msaa_3d == Viewport.MSAA_4X)
+	Settings.set_value("msaa", 0)
+	Settings.set_value("max_fps", 60)
+	check("the frame limit reaches the engine", Engine.max_fps == 60)
+	Settings.set_value("max_fps", 0)
+	Settings.set_value("crosshair", false)
+	await wait(0.1)
+	check("the crosshair can be hidden", not main._crosshair.visible)
+	Settings.set_value("crosshair", true)
+
+	# Each volume reaches its own channel.
+	Settings.set_value("music", 0.0)
+	check("ambience can be silenced alone", AudioServer.is_bus_mute(AudioServer.get_bus_index("Music")) and not AudioServer.is_bus_mute(AudioServer.get_bus_index("SFX")))
+	Settings.set_value("music", 1.0)
+
+	# The real window.
+	var windowed_size := DisplayServer.window_get_size()
+	Settings.set_value("resolution", "1600x900")
+	await wait(0.5)
+	var usable := DisplayServer.screen_get_usable_rect().size
+	check("window size changes (now %s)" % DisplayServer.window_get_size(), DisplayServer.window_get_size() == Vector2i(mini(1600, usable.x), mini(900, usable.y)))
+	Settings.set_value("window_mode", "fullscreen")
+	await wait(1.5)
+	check("fullscreen works", DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN)
+	await _shot("fullscreen")
+	screen = get_viewport().get_visible_rect()
+	check("the HUD still fits in fullscreen", screen.encloses(main._top_label.get_global_rect()) and screen.encloses(main._stamina_bar.get_global_rect()))
+	Settings.set_value("window_mode", "windowed")
+	await wait(1.5)
+	Settings.set_value("resolution", "1280x720")
+	await wait(0.5)
+	check("windowed mode comes back at its size", DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_WINDOWED and DisplayServer.window_get_size() == windowed_size)
+
+	# A controller, from the look stick to the menus.
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.1)
+	await _pad_stick(JOY_AXIS_RIGHT_X, 1.0)
+	await wait(0.3)
+	await _pad_stick(JOY_AXIS_RIGHT_X, 0.0)
+	check("the right stick looks around (turned %.2f)" % me().rotation.y, me().rotation.y < -0.3)
+	check("using a controller is noticed", Settings.using_pad)
+	var settled := me().rotation.y
+	await wait(0.2)
+	check("releasing the stick stops turning", is_equal_approx(me().rotation.y, settled))
+	await _pad_stick(JOY_AXIS_RIGHT_X, 0.05)
+	await wait(0.2)
+	check("stick drift inside the dead zone is ignored", is_equal_approx(me().rotation.y, settled))
+	await _pad_stick(JOY_AXIS_RIGHT_X, 0.0)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, -9.0))
+	await wait(0.1)
+	var start_z := me().position.z
+	await _pad_stick(JOY_AXIS_LEFT_Y, -1.0)
+	await wait(0.4)
+	await _pad_stick(JOY_AXIS_LEFT_Y, 0.0)
+	check("the left stick moves the player", me().position.z < start_z - 0.5)
+	await wait(0.1)
+	item = free_items_outside_ship()[0]
+	me().rotation.y = 0.0
+	me().teleport(Vector3(item.position.x, 0.1, item.position.z + 1.5))
+	await wait(0.3)
+	check("prompts switch to controller buttons", me().interact_prompt.begins_with("X: pick up"))
+	await _pad_button(JOY_BUTTON_X)
+	check("the X button picks up", await until(func() -> bool: return Session.item_held_by(1) != null, 2.0))
+	check("the drop prompt shows B", me().interact_prompt.begins_with("B: drop") or await until(func() -> bool: return me().interact_prompt.begins_with("B: drop"), 1.0))
+	await _pad_button(JOY_BUTTON_B)
+	check("the B button drops, and doesn't pause", await until(func() -> bool: return Session.item_held_by(1) == null, 2.0) and not main._pause.visible)
+	var lamp: bool = me().net_flashlight
+	await _pad_button(JOY_BUTTON_Y)
+	check("the Y button toggles the flashlight", me().net_flashlight != lamp)
+	await _pad_button(JOY_BUTTON_Y)
+
+	# Menus with a controller: Start, focus, tabs, B to go back, and rebinding.
+	await _pad_button(JOY_BUTTON_START)
+	check("Start pauses", main._pause.visible)
+	var focused := get_viewport().gui_get_focus_owner()
+	check("the pause menu has controller focus", focused != null and main._pause.is_ancestor_of(focused))
+	await _shot("pause_focus")
+	# Using only the controller: D-pad down to Settings, then A to open it.
+	var first_focus := focused
+	await _pad_button(JOY_BUTTON_DPAD_DOWN)
+	await wait(0.1)
+	focused = get_viewport().gui_get_focus_owner()
+	check("the D-pad moves between menu buttons", focused != first_focus and focused == main._pause_settings_button)
+	await _pad_button(JOY_BUTTON_A)
+	await wait(0.2)
+	check("the A button presses the focused button", menu.visible)
+	focused = get_viewport().gui_get_focus_owner()
+	check("settings has controller focus", focused != null and menu.is_ancestor_of(focused))
+	var tab_before := menu.tabs.current_tab
+	await _pad_button(JOY_BUTTON_RIGHT_SHOULDER)
+	check("RB moves to the next tab", menu.tabs.current_tab == (tab_before + 1) % 5)
+	await _shot("settings_focus")
+	focused = get_viewport().gui_get_focus_owner()
+	check("focus follows into the new tab", focused != null and menu.tabs.get_current_tab_control().is_ancestor_of(focused))
+	menu.tabs.current_tab = 3
+	await wait(0.1)
+	menu._bind_buttons["drop/controller"].pressed.emit()
+	await _pad_button(JOY_BUTTON_LEFT_SHOULDER)
+	check("a controller button can be rebound", Settings.pad.drop == "joy:%d" % JOY_BUTTON_LEFT_SHOULDER)
+	Settings.rebind("drop", "controller", Settings.DEFAULT_PAD.drop)
+	await _pad_button(JOY_BUTTON_B)
+	check("B leaves settings", not menu.visible and main._pause.visible)
+	await _pad_button(JOY_BUTTON_START)
+	check("Start resumes", not main._pause.visible and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+
+	# Back to the keyboard, and prompts follow.
+	await _press(KEY_F)
+	await _press(KEY_F)
+	check("prompts return to keyboard keys", not Settings.using_pad)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, -9.0))
+
+
+# --- Settings: saving, safety limits and rebinding rules ------------------------
+
+func _settings() -> void:
+	var path := OS.get_user_data_dir().path_join("test_settings_%d.cfg" % OS.get_process_id())
+	Settings._file = path
+	Settings._persist = true
+	check("settings start at their defaults", Settings.value("fov") == Settings.DEFAULTS.fov)
+
+	# Limits.
+	Settings.set_value("fov", 9999.0)
+	check("numbers are held to their limits", Settings.value("fov") == 110.0)
+	Settings.set_value("fov", NAN)
+	check("nonsense numbers are refused", Settings.value("fov") == Settings.DEFAULTS.fov)
+	Settings.set_value("window_mode", "banana")
+	check("nonsense choices are refused", Settings.value("window_mode") == "windowed")
+	Settings.set_value("vsync", "yes please")
+	check("nonsense on/off values are refused", Settings.value("vsync") == true)
+
+	# Saving and loading.
+	Settings.set_value("fov", 90.0)
+	Settings.set_value("master", 0.25)
+	Settings.set_value("invert_y", true)
+	Settings.rebind("jump", "keyboard", "key:%d" % KEY_C)
+	Settings.save()
+	Settings.reset_to_defaults()
+	Settings._persist = true
+	var reset_ok: bool = Settings.value("fov") == Settings.DEFAULTS.fov and Settings.keys.jump == Settings.DEFAULT_KEYS.jump
+	check("reset restores every default", reset_ok)
+	Settings.set_value("fov", 90.0)
+	Settings.set_value("master", 0.25)
+	Settings.set_value("invert_y", true)
+	Settings.rebind("jump", "keyboard", "key:%d" % KEY_C)
+	Settings.save()
+	Settings.values = Settings.DEFAULTS.duplicate()
+	Settings.keys = Settings.DEFAULT_KEYS.duplicate()
+	Settings.load_from_file()
+	check("settings survive a restart", Settings.value("fov") == 90.0 and Settings.value("master") == 0.25 and Settings.value("invert_y") == true and Settings.keys.jump == "key:%d" % KEY_C)
+
+	# Damaged files.
+	var damaged := FileAccess.open(path, FileAccess.WRITE)
+	damaged.store_string("this is not a settings file {{{")
+	damaged.close()
+	Settings.load_from_file()
+	check("a damaged file falls back to defaults", Settings.value("fov") == Settings.DEFAULTS.fov and Settings.keys.jump == Settings.DEFAULT_KEYS.jump)
+	var odd := ConfigFile.new()
+	odd.set_value("settings", "fov", "wide")
+	odd.set_value("settings", "master", 40.0)
+	odd.set_value("settings", "window_mode", 7)
+	odd.set_value("keyboard", "jump", "nonsense")
+	odd.set_value("keyboard", "drop", "key:%d" % KEY_ESCAPE)
+	odd.set_value("controller", "jump", "joy:999")
+	odd.save(path)
+	Settings.load_from_file()
+	check("bad values in a file are repaired", Settings.value("fov") == Settings.DEFAULTS.fov and Settings.value("master") == 1.0 and Settings.value("window_mode") == "windowed")
+	check("bad bindings in a file are ignored", Settings.keys.jump == Settings.DEFAULT_KEYS.jump and Settings.keys.drop == Settings.DEFAULT_KEYS.drop and Settings.pad.jump == Settings.DEFAULT_PAD.jump)
+	var old := ConfigFile.new()
+	old.set_value("audio", "volume", 0.35)
+	old.save(path)
+	Settings.load_from_file()
+	check("the old volume setting carries over", is_equal_approx(Settings.value("master"), 0.35))
+	Settings.apply_bindings()
+
+	# Rebinding rules.
+	Settings.reset_to_defaults()
+	Settings.rebind("jump", "keyboard", Settings.DEFAULT_KEYS.drop)
+	check("taking a used key swaps the two actions", Settings.keys.jump == Settings.DEFAULT_KEYS.drop and Settings.keys.drop == Settings.DEFAULT_KEYS.jump)
+	var event := InputEventKey.new()
+	event.physical_keycode = KEY_G
+	check("the swap reaches the game's input", event.is_action("jump") and not event.is_action("drop"))
+	var unique := {}
+	for action: String in Settings.keys:
+		unique[Settings.keys[action]] = true
+	check("no key ever does two things", unique.size() == Settings.keys.size())
+	Settings.reset_to_defaults()
+	var escape := InputEventKey.new()
+	escape.physical_keycode = KEY_ESCAPE
+	escape.pressed = true
+	check("Esc can't be rebound", Settings.binding_from_event(escape, "keyboard") == "")
+	var start := InputEventJoypadButton.new()
+	start.button_index = JOY_BUTTON_START
+	start.pressed = true
+	check("Start can't be rebound", Settings.binding_from_event(start, "controller") == "")
+	var stick := InputEventJoypadMotion.new()
+	stick.axis = JOY_AXIS_LEFT_X
+	stick.axis_value = 1.0
+	check("sticks can't be bound to buttons", Settings.binding_from_event(stick, "controller") == "")
+	var trigger := InputEventJoypadMotion.new()
+	trigger.axis = JOY_AXIS_TRIGGER_LEFT
+	trigger.axis_value = 1.0
+	check("triggers can be bound", Settings.binding_from_event(trigger, "controller") == "axis:%d" % JOY_AXIS_TRIGGER_LEFT)
+	var mouse := InputEventMouseButton.new()
+	mouse.button_index = MOUSE_BUTTON_RIGHT
+	mouse.pressed = true
+	check("mouse buttons can be bound", Settings.binding_from_event(mouse, "keyboard") == "mouse:%d" % MOUSE_BUTTON_RIGHT)
+	check("binding names read naturally", Settings.binding_name("axis:5") == "RT" and Settings.binding_name("joy:0") == "A" and Settings.binding_name("mouse:2") == "Right click" and Settings.binding_name("key:%d" % KEY_E) == "E")
+
+	# Audio channels, vibration and hints.
+	check("audio has separate channels", AudioServer.get_bus_index("Music") > 0 and AudioServer.get_bus_index("SFX") > 0)
+	check("ambience uses its own channel", Sfx._ambient.bus == "Music")
+	Settings.set_value("sfx", 0.5)
+	check("the effects volume reaches its channel", is_equal_approx(db_to_linear(AudioServer.get_bus_volume_db(AudioServer.get_bus_index("SFX"))), 0.5))
+	Settings.set_value("vibration", false)
+	Settings.rumble(1.0, 1.0, 0.1)
+	check("vibration can be turned off", Settings.rumble_count == 0)
+	Settings.set_value("vibration", true)
+	Settings.rumble(1.0, 1.0, 0.1)
+	check("vibration is on by default", Settings.rumble_count == 1)
+	Settings.set_value("hints", false)
+	Session.show_hint("stalker")
+	check("hints can be turned off", Session.hint_seconds == 0.0)
+	Settings.set_value("hints", true)
+	DirAccess.remove_absolute(path)
+	check("tests leave the real settings alone", not FileAccess.file_exists(path))
+
+
 # --- Measures how loud each sound is, one at a time, at master volume 100% ------
 
 func _peak_over(seconds: float) -> float:
@@ -768,7 +1112,7 @@ func _peak_over(seconds: float) -> float:
 
 
 func _levels() -> void:
-	Sfx.set_volume(1.0)
+	Settings.set_value("master", 1.0)
 	await wait(0.5)
 	Sfx.set_ambient(true)
 	print("LEVEL ambient %.1f dB" % await _peak_over(4.0))

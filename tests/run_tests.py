@@ -61,7 +61,7 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", [])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)

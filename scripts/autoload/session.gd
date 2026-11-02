@@ -50,7 +50,6 @@ var _hint_check_timer := 0.0
 
 
 func _ready() -> void:
-	_setup_input()
 	players_root = _make_root("Players")
 	scrap_root = _make_root("ScrapItems")
 	entity_root = _make_root("Entities")
@@ -75,20 +74,6 @@ func _make_spawner(spawner_name: String, root_name: String, spawn_function: Call
 	spawner.spawn_path = NodePath("../" + root_name)
 	spawner.spawn_function = spawn_function
 	return spawner
-
-
-func _setup_input() -> void:
-	var keys := {
-		"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
-		"sprint": KEY_SHIFT, "jump": KEY_SPACE, "interact": KEY_E, "drop": KEY_G, "flashlight": KEY_F,
-	}
-	for action: String in keys:
-		if InputMap.has_action(action):
-			continue
-		InputMap.add_action(action)
-		var event := InputEventKey.new()
-		event.physical_keycode = keys[action]
-		InputMap.action_add_event(action, event)
 
 
 # --- Spawning: these run on every machine with the same data -----------------
@@ -149,6 +134,8 @@ func show_hint(kind: String) -> void:
 	if _hints_seen.has(kind):
 		return
 	_hints_seen[kind] = true
+	if not Settings.value("hints"):
+		return
 	hint_text = Entity.INFO[kind].hint
 	hint_seconds = HINT_SECONDS
 	Sfx.play_2d("hint", -14.0)
@@ -412,6 +399,7 @@ func _rpc_player_state(peer: int, hp: int, alive: bool) -> void:
 	player_states[peer] = {"hp": hp, "alive": alive}
 	if peer == Net.my_id() and hp < old_hp:
 		Sfx.play_2d("hit", -4.0)
+		Settings.rumble(0.4, 0.8, 0.3)
 	stats_changed.emit()
 
 

@@ -28,6 +28,23 @@ To play with someone on your home network, type the host's local IP address into
 join box. Over the internet this version needs the host to forward UDP port 24567. Step 6
 below replaces that with Steam invites.
 
+## Settings
+
+Open **Settings** from the main menu or the pause menu. Every change applies straight away and
+is remembered. Settings live in `scripts/autoload/settings.gd` and the screen in
+`scripts/settings_menu.gd`.
+
+| Tab | What's there |
+|---|---|
+| Display | Window mode and size, V-Sync, frame limit, render quality, anti-aliasing, flashlight shadows, brightness, field of view |
+| Audio | Master, ambience and sound effects volume |
+| Controls | Mouse sensitivity, invert mouse, rebind every key (mouse buttons work too) |
+| Controller | Look sensitivity, invert look, stick dead zone, vibration, rebind every button |
+| Gameplay | Creature hints, crosshair |
+
+Controller defaults: left stick moves, right stick looks, A jumps, X picks up or uses, B drops,
+Y is the flashlight, RT sprints, Start pauses. In menus, LB and RB switch tabs and B goes back.
+
 ## Maps and creatures
 
 Each run visits the four maps in a random order, and threats grow as rounds pass. To change
