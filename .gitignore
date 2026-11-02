@@ -1,0 +1,10 @@
+# Godot's generated cache
+.godot/
+
+# Local engine install (large, re-downloadable)
+tools/
+
+# Build output
+build/
+
+.DS_Store

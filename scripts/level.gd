@@ -1,0 +1,224 @@
+class_name Level
+extends Node3D
+## Turns a FacilityLayout into a place. What you see comes from the art packs,
+## drawn in efficient batches; what you bump into is a set of invisible boxes
+## measured to match those models.
+
+const WALL_HEIGHT := 4.25
+const WALL_THICKNESS := 1.4 # The wall models stick out 0.7 m on each side.
+const DOOR_WIDTH := 2.8 # The clear opening of the gate model.
+const DOOR_HEIGHT := 3.6
+const GATE_WIDTH := 4.2
+
+const FACILITY_TINT := Color(0.6, 0.58, 0.62)
+const SHIP_TINT := Color(1.0, 1.0, 1.0)
+
+var _body: StaticBody3D
+var _batches := {} # [path, tint] -> Array[Transform3D]
+var _flicker_lights: Array[OmniLight3D] = []
+var _flicker_time := 0.0
+
+
+func build(layout: FacilityLayout) -> void:
+	_body = StaticBody3D.new()
+	add_child(_body)
+	_add_environment()
+	var half := FacilityLayout.CELL * 0.5
+	var extent := layout.size * FacilityLayout.CELL
+	var middle := Vector3(extent * 0.5 - half, 0.0, extent * 0.5 - half)
+	_solid(middle + Vector3(0, -0.25, 0), Vector3(extent, 0.5, extent))
+	_solid(middle + Vector3(0, WALL_HEIGHT + 0.25, 0), Vector3(extent, 0.5, extent))
+	var ship_center := FacilityLayout.cell_center(FacilityLayout.SHIP_CELL)
+	_solid(ship_center + Vector3(0, -0.25, 0), Vector3(10, 0.5, 10))
+	_solid(ship_center + Vector3(0, WALL_HEIGHT + 0.25, 0), Vector3(10, 0.5, 10))
+
+	var cells := layout.all_cells()
+	cells.append(FacilityLayout.SHIP_CELL)
+	var done := {}
+	for cell in cells:
+		_add_floor_and_ceiling(cell, SHIP_TINT if cell == FacilityLayout.SHIP_CELL else FACILITY_TINT)
+		for dir in FacilityLayout.DIRS:
+			var other: Vector2i = cell + dir
+			var key := Vector4i(mini(cell.x, other.x), mini(cell.y, other.y), maxi(cell.x, other.x), maxi(cell.y, other.y))
+			if done.has(key):
+				continue
+			done[key] = true
+			_add_wall(layout, cell, dir)
+
+	for prop: Dictionary in layout.props:
+		_add_prop(Assets.FACTORY % prop.model, prop.pos, prop.turns * PI * 0.5, prop.scale)
+	for pos: Vector3 in layout.floor_details:
+		_place(Assets.SPACE % "cables", Transform3D(Basis.IDENTITY, pos), FACILITY_TINT)
+
+	for cell in layout.light_cells:
+		_add_light(FacilityLayout.cell_center(cell) + Vector3(0, WALL_HEIGHT - 0.4, 0), Color(1.0, 0.72, 0.45), 0.9, 8.0, true)
+	_add_light(ship_center + Vector3(0, WALL_HEIGHT - 0.4, 0), Color(0.85, 0.95, 1.0), 1.5, 12.0, false)
+
+	# The launch console, with warning lights on each side.
+	_add_prop(Assets.FACTORY % "machine-window", Rules.CONSOLE_POS, 0.0, 1.2)
+	for side: float in [-2.2, 2.2]:
+		_add_prop(Assets.FACTORY % "warning-orange", Rules.CONSOLE_POS + Vector3(side, 0, -0.3), 0.0, 1.5)
+	add_child(Sfx.make_ship_hum(ship_center + Vector3(0, 2, 0)))
+	_flush_batches()
+
+
+func _process(delta: float) -> void:
+	_flicker_time += delta
+	for index in _flicker_lights.size():
+		var seed_time := _flicker_time * 7.0 + index * 13.7
+		var dip := 0.25 if sin(seed_time) * sin(seed_time * 0.37) > 0.82 else 1.0
+		_flicker_lights[index].light_energy = 0.9 * dip
+
+
+func _add_floor_and_ceiling(cell: Vector2i, tint: Color) -> void:
+	var center := FacilityLayout.cell_center(cell)
+	var scale_basis := Basis.from_scale(Vector3(1.25, 1.0, 1.25))
+	var upside_down := Basis(Vector3.RIGHT, PI) * scale_basis
+	for x: float in [-2.5, 2.5]:
+		for z: float in [-2.5, 2.5]:
+			var pos := center + Vector3(x, 0, z)
+			_place(Assets.SPACE % "template-floor", Transform3D(scale_basis, pos), tint)
+			_place(Assets.SPACE % "template-floor", Transform3D(upside_down, pos + Vector3(0, WALL_HEIGHT, 0)), tint * Color(0.7, 0.7, 0.7))
+
+
+func _add_wall(layout: FacilityLayout, cell: Vector2i, dir: Vector2i) -> void:
+	var other: Vector2i = cell + dir
+	var size := FacilityLayout.CELL
+	var line := FacilityLayout.cell_center(cell) + Vector3(dir.x, 0, dir.y) * size * 0.5
+	var along_x := dir.x == 0
+	var axis := Vector3.RIGHT if along_x else Vector3.BACK
+	var has_door := layout.is_open(cell, other)
+
+	# What you bump into.
+	if has_door:
+		var side := (size - DOOR_WIDTH) * 0.5
+		var shift := (size + DOOR_WIDTH) * 0.25
+		for sign_value: float in [-1.0, 1.0]:
+			_solid(line + axis * shift * sign_value + Vector3(0, WALL_HEIGHT * 0.5, 0), _wall_size(side, WALL_HEIGHT, along_x))
+		var lintel := WALL_HEIGHT - DOOR_HEIGHT
+		_solid(line + Vector3(0, DOOR_HEIGHT + lintel * 0.5, 0), _wall_size(DOOR_WIDTH, lintel, along_x))
+	else:
+		_solid(line + Vector3(0, WALL_HEIGHT * 0.5, 0), _wall_size(size, WALL_HEIGHT, along_x))
+
+	# What you see: a wall face on each side that has a room, facing into it.
+	var into_cell := Vector3(-dir.x, 0, -dir.y)
+	_add_wall_face(line, axis, into_cell, has_door, _tint_for(cell))
+	if layout.has_cell(other) or other == FacilityLayout.SHIP_CELL:
+		_add_wall_face(line, axis, -into_cell, has_door, _tint_for(other))
+	if has_door:
+		var ship_door: bool = cell == FacilityLayout.SHIP_CELL or other == FacilityLayout.SHIP_CELL
+		var turn := Basis.IDENTITY if along_x else Basis(Vector3.UP, PI * 0.5)
+		_place(Assets.SPACE % "gate", Transform3D(turn, line), SHIP_TINT if ship_door else FACILITY_TINT)
+
+
+func _add_wall_face(line: Vector3, axis: Vector3, facing: Vector3, has_door: bool, tint: Color) -> void:
+	# The wall model is 4 m wide and extends along its own -Z, so -Z points into the room.
+	var turn := Basis(Vector3.UP, atan2(-facing.x, -facing.z))
+	if has_door:
+		var length := (FacilityLayout.CELL - GATE_WIDTH) * 0.5
+		var offset := (GATE_WIDTH + length) * 0.5
+		var stretched := turn * Basis.from_scale(Vector3(length / 4.0, 1.0, 1.0))
+		for sign_value: float in [-1.0, 1.0]:
+			_place(Assets.SPACE % "template-wall", Transform3D(stretched, line + axis * offset * sign_value), tint)
+	else:
+		var stretched := turn * Basis.from_scale(Vector3(1.25, 1.0, 1.0))
+		for sign_value: float in [-1.0, 1.0]:
+			_place(Assets.SPACE % "template-wall", Transform3D(stretched, line + axis * 2.5 * sign_value), tint)
+
+
+func _tint_for(cell: Vector2i) -> Color:
+	return SHIP_TINT if cell == FacilityLayout.SHIP_CELL else FACILITY_TINT
+
+
+func _add_prop(path: String, pos: Vector3, angle: float, prop_scale: float) -> void:
+	var turn := Basis(Vector3.UP, angle)
+	_place(path, Transform3D(turn * Basis.from_scale(Vector3.ONE * prop_scale), pos), Color.WHITE)
+	var box := Assets.bounds(path)
+	var shape := BoxShape3D.new()
+	shape.size = box.size * prop_scale
+	var collision := CollisionShape3D.new()
+	collision.shape = shape
+	collision.transform = Transform3D(turn, pos + turn * (box.get_center() * prop_scale))
+	_body.add_child(collision)
+
+
+func _wall_size(length: float, height: float, along_x: bool) -> Vector3:
+	if along_x:
+		return Vector3(length, height, WALL_THICKNESS)
+	return Vector3(WALL_THICKNESS, height, length)
+
+
+func _solid(center: Vector3, size: Vector3) -> void:
+	var shape := BoxShape3D.new()
+	shape.size = size
+	var collision := CollisionShape3D.new()
+	collision.shape = shape
+	collision.position = center
+	_body.add_child(collision)
+
+
+func _place(path: String, placement: Transform3D, tint: Color) -> void:
+	var key := [path, tint]
+	if not _batches.has(key):
+		_batches[key] = []
+	_batches[key].append(placement)
+
+
+## Hundreds of copies of a model become one draw call, which keeps the frame rate up.
+func _flush_batches() -> void:
+	for key: Array in _batches:
+		var placements: Array = _batches[key]
+		for part: Dictionary in Assets.mesh_parts(key[0]):
+			var multimesh := MultiMesh.new()
+			multimesh.transform_format = MultiMesh.TRANSFORM_3D
+			multimesh.mesh = part.mesh
+			multimesh.instance_count = placements.size()
+			for index in placements.size():
+				multimesh.set_instance_transform(index, placements[index] * part.transform)
+			var instance := MultiMeshInstance3D.new()
+			instance.multimesh = multimesh
+			instance.material_override = _tinted(part.mesh, key[1])
+			add_child(instance)
+	_batches.clear()
+
+
+func _tinted(mesh: Mesh, tint: Color) -> Material:
+	var source := mesh.surface_get_material(0) as BaseMaterial3D
+	if source == null or tint == Color.WHITE:
+		return source
+	var material: BaseMaterial3D = source.duplicate()
+	material.albedo_color = source.albedo_color * tint
+	return material
+
+
+func _add_light(pos: Vector3, color: Color, energy: float, light_range: float, flicker: bool) -> void:
+	var light := OmniLight3D.new()
+	light.position = pos
+	light.light_color = color
+	light.light_energy = energy
+	light.omni_range = light_range
+	add_child(light)
+	if flicker:
+		_flicker_lights.append(light)
+
+
+func _add_environment() -> void:
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color.BLACK
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.5, 0.55, 0.7)
+	env.ambient_light_energy = 0.12
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.02, 0.02, 0.03)
+	env.fog_density = 0.03
+	var world_env := WorldEnvironment.new()
+	world_env.environment = env
+	add_child(world_env)
+
+
+static func _material(color: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = 0.9
+	return mat
