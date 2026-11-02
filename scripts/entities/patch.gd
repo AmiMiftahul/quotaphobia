@@ -31,6 +31,8 @@ func _build(_data: Dictionary) -> void:
 	var cross := SphereMesh.new()
 	cross.radius = 0.3
 	cross.height = 0.6
+	cross.radial_segments = 16
+	cross.rings = 8
 	var material := Level._material(Color(0.3, 1.0, 0.5))
 	material.emission_enabled = true
 	material.emission = Color(0.3, 1.0, 0.5)

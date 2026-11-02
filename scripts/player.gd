@@ -129,6 +129,8 @@ func _build_phone_model() -> void:
 	var dot := SphereMesh.new()
 	dot.radius = 0.03
 	dot.height = 0.06
+	dot.radial_segments = 8
+	dot.rings = 4
 	var red := StandardMaterial3D.new()
 	red.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	red.albedo_color = Color.RED

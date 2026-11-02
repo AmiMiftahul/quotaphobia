@@ -22,6 +22,8 @@ func _build(data: Dictionary) -> void:
 	var mesh := SphereMesh.new()
 	mesh.radius = RADIUS
 	mesh.height = RADIUS * 1.4
+	mesh.radial_segments = 48
+	mesh.rings = 24
 	var material := StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -42,6 +44,9 @@ func _build(data: Dictionary) -> void:
 	var dot := SphereMesh.new()
 	dot.radius = 0.12
 	dot.height = 0.24
+	# Each vent shows dozens of these, so every triangle counts.
+	dot.radial_segments = 6
+	dot.rings = 3
 	dot.material = material
 	_particles.mesh = dot
 	_particles.position.y = 0.8

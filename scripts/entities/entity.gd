@@ -140,6 +140,8 @@ func _add_eyes(color: Color, height: float, spread: float, forward_offset: float
 		var mesh := SphereMesh.new()
 		mesh.radius = eye_size
 		mesh.height = eye_size * 2.0
+		mesh.radial_segments = 10
+		mesh.rings = 5
 		var material := Level._material(color)
 		material.emission_enabled = true
 		material.emission = color

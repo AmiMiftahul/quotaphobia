@@ -23,6 +23,8 @@ func _build(_data: Dictionary) -> void:
 	var mesh := SphereMesh.new()
 	mesh.radius = 0.16
 	mesh.height = 0.32
+	mesh.radial_segments = 12
+	mesh.rings = 6
 	_orb = StandardMaterial3D.new()
 	_orb.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_orb.albedo_color = CALM_COLOR

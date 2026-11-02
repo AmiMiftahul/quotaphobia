@@ -30,6 +30,7 @@ func _ready() -> void:
 		"settings": await _settings()
 		"video": await _video()
 		"carry": await _carry()
+		"perf": await _perf()
 		"days": await _days()
 		_: await _scenario()
 	print("RESULT %s%d fails=%d" % [role, idx, fails])
@@ -150,6 +151,18 @@ func _unit() -> void:
 
 	# Art and sound: everything must load, and nothing may block a walkway.
 	check("every sound file loads", Sfx.missing_streams().is_empty())
+	var referenced := ""
+	for path in ["res://scripts/map_themes.gd", "res://scripts/facility_layout.gd", "res://scripts/level.gd", "res://scripts/player.gd", "res://scripts/monster.gd"]:
+		referenced += FileAccess.get_file_as_string(path)
+	for folder in ["res://scripts/entities"]:
+		for file_name in DirAccess.get_files_at(folder):
+			if file_name.ends_with(".gd"):
+				referenced += FileAccess.get_file_as_string(folder.path_join(file_name))
+	var unused_models := []
+	for file_name in DirAccess.get_files_at("res://assets/models/factory"):
+		if file_name.ends_with(".glb") and not referenced.contains('"%s"' % file_name.get_basename()):
+			unused_models.append(file_name)
+	check("no unused models are shipped %s" % str(unused_models), unused_models.is_empty())
 	var models_ok := true
 	var names: Array = []
 	names.append_array(FacilityLayout.SCRAP_MODELS.values())
@@ -1157,6 +1170,54 @@ func _ui_settings(main: Control) -> void:
 	check("prompts return to keyboard keys", not Settings.using_pad)
 	me().rotation.y = 0.0
 	me().teleport(Vector3(0, 0.1, -9.0))
+
+
+# --- Speed: every map at its largest, with the frame rate limit off ---------------
+
+func _perf() -> void:
+	print("PERF_START game ready after %d ms" % Time.get_ticks_msec())
+	Net.listen_port = port
+	Settings.set_value("vsync", false)
+	Settings.set_value("max_fps", 0)
+	var main: Control = load("res://scenes/main.tscn").instantiate()
+	add_child(main)
+	check("host opens", Net.host("Host", port) == OK)
+	Session.forced_maps = ["foundry"]
+	Session.start_run()
+	await until(func() -> bool: return me() != null, 3.0)
+	for map: String in MapThemes.ORDER:
+		Session.forced_maps = [map]
+		Session._clear_entities()
+		Session.level_number = 5 # The largest facility, with the most creatures.
+		Session._run_seed = 12345 # The same facility every time, so runs can be compared.
+		var built_at := Time.get_ticks_usec()
+		Session._begin_round(3)
+		var build_ms := (Time.get_ticks_usec() - built_at) / 1000.0
+		Session.time_left = 300.0
+		await until(func() -> bool: return me() != null, 3.0)
+		me().teleport(FacilityLayout.cell_center(Vector2i(3, 3)) + Vector3(0, 0.1, 0))
+		for entity: Entity in Session.entity_root.get_children():
+			entity.grace = 0.0
+		me().teleport(FacilityLayout.cell_center(Vector2i(0, 0)) + Vector3(0, 0.1, -9.0))
+		me().rotation.y = PI
+		await wait(1.5)
+		var frames := 0
+		var slowest := 0.0
+		var started := Time.get_ticks_usec()
+		var slow_frames := 0
+		while Time.get_ticks_usec() - started < 4000000:
+			await get_tree().process_frame
+			frames += 1
+			slowest = maxf(slowest, get_process_delta_time())
+			if get_process_delta_time() > 1.0 / 60.0:
+				slow_frames += 1
+		var seconds := (Time.get_ticks_usec() - started) / 1000000.0
+		print("PERF %s: %.0f fps, slowest frame %.1f ms, %d frames over 16.7 ms, %d triangles, %d draw calls, level built in %.0f ms, %.0f MB video memory" % [
+			map, frames / seconds, slowest * 1000.0, slow_frames,
+			RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
+			RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME), build_ms,
+			RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576.0])
+	Net.leave()
 
 
 # --- The backpack's rules -------------------------------------------------------
