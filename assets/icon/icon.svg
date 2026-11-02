@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a1b33"/>
+      <stop offset="1" stop-color="#0d0a14"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffb347"/>
+      <stop offset="1" stop-color="#d9480f"/>
+    </linearGradient>
+    <linearGradient id="coin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe680"/>
+      <stop offset="1" stop-color="#e0a100"/>
+    </linearGradient>
+  </defs>
+  <!-- Background: leaves the margin that macOS icons expect. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#night)"/>
+  <!-- The lit doorway. -->
+  <path d="M232 860 V400 Q232 200 512 200 Q792 200 792 400 V860 Z" fill="url(#glow)"/>
+  <!-- The thing standing in it. -->
+  <path d="M300 860 V640 Q300 560 370 530 Q320 470 332 400 Q345 300 512 300 Q679 300 692 400 Q704 470 654 530 Q724 560 724 640 V860 Z" fill="#0b0710"/>
+  <!-- Its eyes. -->
+  <ellipse cx="424" cy="430" rx="54" ry="66" fill="#ff1f1f"/>
+  <ellipse cx="600" cy="430" rx="54" ry="66" fill="#ff1f1f"/>
+  <ellipse cx="424" cy="430" rx="20" ry="30" fill="#ffe3e3"/>
+  <ellipse cx="600" cy="430" rx="20" ry="30" fill="#ffe3e3"/>
+  <!-- What you came for. -->
+  <circle cx="512" cy="730" r="118" fill="url(#coin)" stroke="#7a4b00" stroke-width="16"/>
+  <path d="M556 682 Q540 660 508 660 Q464 660 464 696 Q464 726 512 732 Q562 740 562 770 Q562 802 514 802 Q478 802 460 776 M512 636 V826" fill="none" stroke="#7a4b00" stroke-width="26" stroke-linecap="round"/>
+</svg>

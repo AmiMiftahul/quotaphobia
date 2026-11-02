@@ -150,6 +150,15 @@ func _unit() -> void:
 	check("ship boundary", Rules.in_ship(Vector3(0, 0, -10)) and not Rules.in_ship(Vector3(0, 0, 0)))
 
 	# Art and sound: everything must load, and nothing may block a walkway.
+	check("the game has its name", ProjectSettings.get_setting("application/config/name") == "Quotaphobia")
+	var icon_path: String = ProjectSettings.get_setting("application/config/icon")
+	var icon_image := Image.load_from_file(ProjectSettings.globalize_path(icon_path))
+	check("the game has its icon", icon_image != null and icon_image.get_size() == Vector2i(256, 256))
+	check("the icon's corners are see-through", icon_image.get_pixel(2, 2).a == 0.0)
+	var old_name_found := false
+	for code_file in ["res://scripts/main.gd", "res://project.godot"]:
+		old_name_found = old_name_found or FileAccess.get_file_as_string(code_file).to_lower().contains("scrap shift")
+	check("the old name is gone", not old_name_found)
 	check("every sound file loads", Sfx.missing_streams().is_empty())
 	var referenced := ""
 	for path in ["res://scripts/map_themes.gd", "res://scripts/facility_layout.gd", "res://scripts/level.gd", "res://scripts/player.gd", "res://scripts/monster.gd"]:

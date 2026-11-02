@@ -1,4 +1,4 @@
-# Scrap Shift
+# Quotaphobia
 
 A 1-4 player co-op game made with Godot 4.7. Land at an abandoned facility, carry
 scrap back to the ship, avoid what hunts you, and reach each level's goal within 4 days.
@@ -15,7 +15,7 @@ scrap back to the ship, avoid what hunts you, and reach each level's goal within
 
 ## Play it now
 
-Double-click **Scrap Shift** in this folder, then press **Play now**.
+Double-click **Quotaphobia** in this folder, then press **Play now**.
 
 To play with friends, one person chooses **Host a game with friends** and the others choose
 **Join a game**. For several windows on one Mac, run this command once per extra window:

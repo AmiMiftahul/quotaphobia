@@ -359,7 +359,7 @@ func _build_menu() -> void:
 	var parts := _panel()
 	_menu = parts[0]
 	var box: VBoxContainer = parts[1]
-	_label(box, "SCRAP SHIFT", 36)
+	_label(box, "QUOTAPHOBIA", 36)
 	_label(box, "Your name")
 	_name_edit = LineEdit.new()
 	_name_edit.text = "Player"

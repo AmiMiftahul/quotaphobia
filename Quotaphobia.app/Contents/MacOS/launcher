@@ -5,13 +5,13 @@ PROJECT="$(cd "$(dirname "$0")/../../.." && pwd)"
 GODOT="$PROJECT/tools/Godot.app/Contents/MacOS/Godot"
 
 if [ ! -x "$GODOT" ]; then
-  osascript -e 'display dialog "Scrap Shift needs Godot 4.7.2 in the tools folder. See the README for how to install it." with title "Scrap Shift" buttons {"OK"} default button "OK" with icon stop'
+  osascript -e 'display dialog "Quotaphobia needs Godot 4.7.2 in the tools folder. See the README for how to install it." with title "Quotaphobia" buttons {"OK"} default button "OK" with icon stop'
   exit 1
 fi
 
 # The first start on a computer has to prepare the art and sound, which takes a moment.
 if [ ! -d "$PROJECT/.godot/imported" ]; then
-  osascript -e 'display notification "Getting the game ready for its first start..." with title "Scrap Shift"'
+  osascript -e 'display notification "Getting the game ready for its first start..." with title "Quotaphobia"'
   "$GODOT" --headless --path "$PROJECT" --import > /dev/null 2>&1
 fi
 

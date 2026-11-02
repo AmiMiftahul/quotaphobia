@@ -5,9 +5,11 @@
 	<key>CFBundleExecutable</key>
 	<string>launcher</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.scrapshift.launcher</string>
+	<string>local.quotaphobia.launcher</string>
+	<key>CFBundleIconFile</key>
+	<string>icon</string>
 	<key>CFBundleName</key>
-	<string>Scrap Shift</string>
+	<string>Quotaphobia</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
