@@ -70,7 +70,15 @@ func setup(id: int, data: Dictionary) -> void:
 		model.scale = Vector3.ONE * MODEL_SCALE
 		model.position.y = -FLOOR_HEIGHT - Assets.bounds(Assets.FACTORY % FacilityLayout.SCRAP_MODELS[kind]).position.y * MODEL_SCALE
 		add_child(model)
-		add_glow(model)
+		if kind == FacilityLayout.RARE_SCRAP:
+			# Solid gold, with a strong glow so it catches the eye across a room.
+			var gold := Level._material(Color(1.0, 0.78, 0.2))
+			gold.metallic = 0.9
+			gold.roughness = 0.25
+			Assets.override_material(model, gold)
+			add_glow(model, Color(1.0, 0.8, 0.2, 0.35))
+		else:
+			add_glow(model)
 		_visual = model
 	charges = data.get("charges", 0)
 	recordings = data.get("recordings", 0)
@@ -109,7 +117,13 @@ static func add_glow(model: Node, color: Color = SCRAP_GLOW) -> void:
 func _process(delta: float) -> void:
 	if armed:
 		_blink += delta
-		_armed_light.light_energy = 3.0 if fmod(_blink, 0.3) < 0.15 else 0.4
+		if kind == Tools.FLARE:
+			# A burning flare: a big, flickering red light.
+			_armed_light.light_color = Tools.FLARE_RED
+			_armed_light.omni_range = 11.0
+			_armed_light.light_energy = 2.6 + sin(_blink * 23.0) * 0.4
+		else:
+			_armed_light.light_energy = 3.0 if fmod(_blink, 0.3) < 0.15 else 0.4
 	var holder := Session.player_node(holder_id) if holder_id != 0 else null
 	_mark_in_my_hands(holder != null and holder.is_local_player)
 	if kind == Tools.CAMCORDER:

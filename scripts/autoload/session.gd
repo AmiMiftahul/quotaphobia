@@ -143,6 +143,9 @@ func _spawn_entity(data: Dictionary) -> Node:
 		"patch": entity = Patch.new()
 		"sentinel": entity = Sentinel.new()
 		"wisp": entity = Wisp.new()
+		"gunner": entity = Gunner.new()
+		"ghost": entity = Ghost.new()
+		"mud": entity = MudCrawler.new()
 	entity.setup(layout, data)
 	return entity
 
@@ -183,7 +186,7 @@ func items_held_by(peer: int) -> Array[Scrap]:
 func gear_count() -> int:
 	var count := 0
 	for item: Scrap in scrap_root.get_children():
-		if item.is_tool():
+		if item.is_tool() and not Tools.is_find(item.kind):
 			count += 1
 	return count
 
@@ -307,14 +310,14 @@ func _spawn_missing_players() -> void:
 
 ## A camcorder can come back with the footage it already had. Gear goes on the rack
 ## unless it's given a spot.
-func _spawn_gear(kind: String, tape: Array = [], at: Vector3 = Vector3.INF) -> void:
+func _spawn_gear(kind: String, tape: Array = [], at: Vector3 = Vector3.INF, charges: int = -1) -> void:
 	var slot := _next_gear_id - Tools.FIRST_ID
 	var spot := Rules.RACK_POS + Vector3(float(slot / 4 % 3) * 0.7, Scrap.FLOOR_HEIGHT, float(slot % 4) * 0.8)
 	if at != Vector3.INF:
 		spot = at
 	if not tape.is_empty():
 		_tapes[_next_gear_id] = tape
-	_scrap_spawner.spawn({"id": _next_gear_id, "kind": kind, "value": 0, "weight": Tools.CATALOG[kind].weight, "pos": spot, "charges": Tools.CATALOG[kind].charges, "recordings": tape.size()})
+	_scrap_spawner.spawn({"id": _next_gear_id, "kind": kind, "value": 0, "weight": Tools.CATALOG[kind].weight, "pos": spot, "charges": Tools.CATALOG[kind].charges if charges < 0 else charges, "recordings": tape.size()})
 	_next_gear_id += 1
 
 
@@ -343,6 +346,9 @@ func _begin_round(number: int) -> void:
 		var data: Dictionary = layout.scrap_spawns[index].duplicate()
 		data["id"] = index + 1
 		_scrap_spawner.spawn(data)
+	# Useful things lying around the facility.
+	for find: Dictionary in layout.finds:
+		_spawn_gear(find.kind, [], find.pos)
 	for data: Dictionary in layout.entity_spawns:
 		var spawn := data.duplicate()
 		spawn["level"] = level_number # Hunters grow stronger with each level.
@@ -414,7 +420,8 @@ func _physics_process(delta: float) -> void:
 		_fuses[grenade] -= delta
 		if _fuses[grenade] <= 0.0:
 			_fuses.erase(grenade)
-			Tools.explode(grenade)
+			if grenade.kind != Tools.FLARE: # A flare just burns out.
+				Tools.explode(grenade)
 			use_up(grenade)
 
 
@@ -531,11 +538,22 @@ func heal_player(peer: int, amount: int) -> void:
 	_rpc_player_state.rpc(peer, mini(player_states[peer].hp + amount, Rules.PLAYER_MAX_HP), true)
 
 
+## How much of your speed you keep here: less in a Mud Crawler's mud.
+func mud_factor(pos: Vector3) -> float:
+	for entity: Entity in entity_root.get_children():
+		if entity is MudCrawler and entity.is_muddy(pos):
+			return MudCrawler.SLOW
+	return 1.0
+
+
 ## Called on the host when the crew's gear finishes something off.
 func kill_entity(entity: Entity) -> void:
 	if not multiplayer.is_server() or entity.get_parent() != entity_root:
 		return
 	play_effect("kill", entity.position, entity.position, 0)
+	if entity.kind == "gunner":
+		# The Gunner's shotgun is left behind, with what shells it had.
+		_spawn_gear(Tools.SHOTGUN, [], Vector3(entity.position.x, Scrap.FLOOR_HEIGHT, entity.position.z), Gunner.SHELLS)
 	entity_root.remove_child(entity)
 	entity.queue_free()
 
@@ -1200,6 +1218,11 @@ func _rpc_effect(kind: String, from: Vector3, to: Vector3, item_id: int) -> void
 			Settings.rumble(0.4, 0.9, 0.2)
 		"inject":
 			Sfx.play_3d("inject", from, -4.0, 12.0)
+		"patched":
+			Sfx.play_3d("heal", from, -2.0, 15.0)
+		"recharge":
+			Sfx.play_3d("zap", from, -6.0, 15.0)
+			_flash(from + Vector3(0, 1.2, 0), Tools.ZAP_BLUE, 2.0)
 		"beacon":
 			Sfx.play_3d("beacon", from, 0.0, 25.0)
 			_flash(from + Vector3(0, 1.2, 0), Tools.BEACON_GREEN, 3.0)

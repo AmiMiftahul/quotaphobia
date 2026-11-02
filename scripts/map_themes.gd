@@ -29,8 +29,8 @@ const MAPS := {
 		"stamina_regen": 1.0,
 		"hum_pitch": 1.0,
 		"ambience": "amb_foundry",
-		"roster": {"stalker": 1, "mimic": 2, "sentinel": 2},
-		"growth": ["mimic", "stalker"],
+		"roster": {"stalker": 1, "gunner": 1, "mimic": 2, "sentinel": 2},
+		"growth": ["mimic", "gunner", "stalker"],
 	},
 	"cryo": {
 		"name": "Cryo Vault",
@@ -55,8 +55,8 @@ const MAPS := {
 		"stamina_regen": 0.5,
 		"hum_pitch": 1.3,
 		"ambience": "amb_cryo",
-		"roster": {"watcher": 2, "patch": 1},
-		"growth": ["watcher"],
+		"roster": {"watcher": 2, "ghost": 1, "patch": 1},
+		"growth": ["ghost", "watcher"],
 	},
 	"biolab": {
 		"name": "Bio Lab",
@@ -81,8 +81,8 @@ const MAPS := {
 		"stamina_regen": 1.0,
 		"hum_pitch": 0.8,
 		"ambience": "amb_biolab",
-		"roster": {"stalker": 1, "gas": 4, "mimic": 1, "patch": 1},
-		"growth": ["gas", "mimic"],
+		"roster": {"stalker": 1, "mud": 1, "gas": 4, "mimic": 1, "patch": 1},
+		"growth": ["mud", "gas", "mimic"],
 	},
 	"reactor": {
 		"name": "Blackout Reactor",
@@ -108,7 +108,7 @@ const MAPS := {
 		"hum_pitch": 0.6,
 		"ambience": "amb_reactor",
 		"roster": {"listener": 2, "watcher": 1, "wisp": 1, "sentinel": 1},
-		"growth": ["listener"],
+		"growth": ["listener", "ghost"],
 	},
 }
 

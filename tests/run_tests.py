@@ -63,7 +63,7 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("slots", [f"port={GAME_PORT - 5}"]), ("kit", [f"port={GAME_PORT - 7}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("slots", [f"port={GAME_PORT - 5}"]), ("kit", [f"port={GAME_PORT - 7}"]), ("beasts", [f"port={GAME_PORT - 8}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)

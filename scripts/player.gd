@@ -314,7 +314,7 @@ func _move(delta: float) -> void:
 		speed = Tools.SCOOTER_SPEED
 	if boosted:
 		speed *= Tools.ADRENALINE_SPEED
-	speed *= 1.0 - Session.carried_weight(peer_id)
+	speed *= (1.0 - Session.carried_weight(peer_id)) * Session.mud_factor(position)
 	var direction := (transform.basis * Vector3(move.x, 0.0, move.y)).normalized()
 	velocity.x = direction.x * speed
 	velocity.z = direction.z * speed
@@ -431,6 +431,9 @@ func _use_verb(item: Scrap) -> String:
 		Tools.ADRENALINE: return "inject the adrenaline"
 		Tools.SCOOTER: return "step off the scooter" if net_riding else "ride the scooter"
 		Tools.BEACON: return "beam back to the ship" if Session.phase == Session.Phase.PLAYING else "beam back (only works on the ground)"
+		Tools.MEDKIT: return "patch yourself up (+%d health)" % Tools.MEDKIT_HEAL
+		Tools.FLARE: return "light and throw the flare"
+		Tools.BATTERY: return "recharge your zap gun or shotgun"
 		Tools.SHOTGUN: return "fire (%d shells)" % item.charges if item.charges > 0 else "fire (empty until orbit)"
 	return "zap (%d left)" % item.charges if item.charges > 0 else "zap (empty until orbit)"
 

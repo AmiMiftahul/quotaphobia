@@ -49,6 +49,7 @@ func _ready() -> void:
 		"slots": await _slots()
 		"tape": await _tape()
 		"kit": await _kit()
+		"beasts": await _beasts()
 		"tape_client": await _tape_client()
 		"late": await _late()
 		_: await _scenario()
@@ -127,7 +128,7 @@ func gear(kind: String) -> Scrap:
 func free_items_outside_ship() -> Array[Scrap]:
 	var items: Array[Scrap] = []
 	for scrap: Scrap in Session.scrap_root.get_children():
-		if scrap.holder_id == 0 and not Rules.in_ship(scrap.position):
+		if scrap.holder_id == 0 and not Rules.in_ship(scrap.position) and not scrap.is_tool():
 			items.append(scrap)
 	return items
 
@@ -346,7 +347,53 @@ func _unit() -> void:
 		var model := Tools.build_model(kind)
 		catalog_ok = catalog_ok and Tools.CATALOG.has(kind) and Tools.CATALOG[kind].price > 0 and model.get_child_count() > 0
 		model.free()
-	check("every piece of gear has a price, a description and a model", catalog_ok and Tools.CATALOG.size() == Tools.ORDER.size())
+	for kind: String in Tools.FINDS:
+		var model := Tools.build_model(kind)
+		catalog_ok = catalog_ok and Tools.is_find(kind) and not kind in Tools.ORDER and model.get_child_count() > 0
+		model.free()
+	check("every piece of gear has a price, a description and a model", catalog_ok and Tools.CATALOG.size() == Tools.ORDER.size() + Tools.FINDS.size())
+	check("found items are never sold or won", not Tools.FINDS.any(func(kind: String) -> bool: return kind in Tools.ORDER or kind in Tools.GACHA_GEAR or kind in Tools.GACHA_RARE))
+
+	# Scrap kinds and things to find.
+	var scrap_ok := FacilityLayout.SCRAP_INFO.size() == FacilityLayout.SCRAP_MODELS.size()
+	for kind: String in FacilityLayout.SCRAP_MODELS:
+		scrap_ok = scrap_ok and FacilityLayout.SCRAP_INFO.has(kind) and not Assets.mesh_parts(Assets.FACTORY % FacilityLayout.SCRAP_MODELS[kind]).is_empty()
+	check("every kind of scrap has a model, a price range and a weight", scrap_ok and FacilityLayout.SCRAP_MODELS.size() >= 10)
+	var kinds_seen := {}
+	var finds_seen := {}
+	var golden := 0
+	var mimics_plain := true
+	var finds_ok := true
+	var light_total := 0
+	var heavy_total := 0
+	for seed_value in 200:
+		var layout := FacilityLayout.new(seed_value, 7, 3, 300, MapThemes.ORDER[seed_value % 4], Rules.SITES[seed_value % 3])
+		for spawn in layout.scrap_spawns:
+			kinds_seen[spawn.kind] = true
+			if spawn.kind == FacilityLayout.RARE_SCRAP:
+				golden += 1
+			var info: Dictionary = FacilityLayout.SCRAP_INFO[spawn.kind]
+			finds_ok = finds_ok and spawn.weight >= info.weight[0] and spawn.weight <= info.weight[1]
+		for entity in layout.entity_spawns:
+			mimics_plain = mimics_plain and entity.get("scrap_kind", "") != FacilityLayout.RARE_SCRAP
+		finds_ok = finds_ok and layout.finds.size() == 1 + layout.size / 2
+		for find in layout.finds:
+			finds_seen[find.kind] = true
+			var offset: Vector3 = find.pos - FacilityLayout.cell_center(FacilityLayout.cell_at(find.pos))
+			finds_ok = finds_ok and Tools.is_find(find.kind) and FacilityLayout.cell_at(find.pos) != FacilityLayout.ENTRY_CELL and layout.has_cell(FacilityLayout.cell_at(find.pos))
+			finds_ok = finds_ok and not (absf(offset.x) > FacilityLayout.SCRAP_CLEARANCE and absf(offset.z) > FacilityLayout.SCRAP_CLEARANCE)
+	check("every kind of scrap turns up (%d of %d)" % [kinds_seen.size(), FacilityLayout.SCRAP_MODELS.size()], kinds_seen.size() == FacilityLayout.SCRAP_MODELS.size())
+	check("golden cogs are rare (%d found)" % golden, golden > 0 and golden < 400)
+	check("a Mimic never pretends to be a golden cog", mimics_plain)
+	check("every facility hides useful items, more in bigger ones, clear of props and the entry", finds_ok and finds_seen.size() == Tools.FINDS.size())
+
+	# The new creatures stay beatable at full strength.
+	var full_power := Rules.threat_power(99)
+	check("a Gunner never kills a healthy player in one shot", roundi(Gunner.DAMAGE * full_power.damage) < Rules.PLAYER_MAX_HP)
+	check("you can always walk away from a Ghost", Ghost.SPEED * full_power.speed < Player.WALK_SPEED)
+	check("even wading through mud, you outpace a Mud Crawler", MudCrawler.SPEED * full_power.speed < Player.WALK_SPEED * MudCrawler.SLOW)
+	check("a Gunner gives you time to duck out of sight", Gunner.AIM_SECONDS >= 1.0)
+	check("a Gunner's dropped shotgun is a real prize", Gunner.SHELLS > 0 and Gunner.SHELLS <= Tools.CATALOG[Tools.SHOTGUN].charges)
 	var pools_ok := true
 	for kind: String in Tools.GACHA_GEAR + Tools.GACHA_RARE:
 		pools_ok = pools_ok and Tools.is_gear(kind)
@@ -1043,7 +1090,8 @@ func _ui() -> void:
 	await wait(0.3)
 	check("the crew list shows after the run", main._crew_panel.visible)
 
-	# Every map: how it looks, and its frame rate at the largest size (8 x 8 rooms).
+	# Every map: how it looks, and its frame rate at the largest size (a large site, 10 x 10 rooms).
+	Session.forced_site = "large"
 	for map: String in MapThemes.ORDER:
 		Session.forced_maps = [map]
 		Session._clear_entities()
@@ -1093,6 +1141,7 @@ func _ui() -> void:
 			me().rotation.y = 0.0
 			me().teleport(spot + Vector3(0, 0.1, 3.0))
 			await _shot("entity_%s_%s" % [map, entity.kind])
+	Session.forced_site = "medium"
 	Session.entities_enabled = false
 	Net.leave()
 	await wait(0.2)
@@ -2202,7 +2251,8 @@ func _scenario() -> void:
 	check("round 1 starts for everyone", await until(func() -> bool: return Session.phase == Session.Phase.PLAYING))
 	check("four players appear", await until(func() -> bool: return Session.players_root.get_child_count() == 4))
 	var scrap_total := Session.layout.scrap_spawns.size()
-	check("all scrap appears", await until(func() -> bool: return Session.scrap_root.get_child_count() == scrap_total))
+	var find_total := Session.layout.finds.size()
+	check("all scrap and useful items appear for everyone", await until(func() -> bool: return Session.scrap_root.get_child_count() == scrap_total + find_total))
 	check("every creature and helper appears", await until(func() -> bool: return Session.entity_root.get_child_count() == Session.layout.entity_spawns.size()))
 	check("everyone sees a player's bought look", Session.player_node(peer_named("Bot1")).model_name == Store.SKIN_MODELS.skin_medic)
 	check("made-up looks fall back to the standard crew", Session.player_node(peer_named("Bot2")).model_name in Player.MODELS)
@@ -3426,4 +3476,178 @@ func _kit() -> void:
 	Session.request_drop.rpc_id(1)
 	await wait(Tools.BEACON_SECONDS + 0.4)
 	check("letting go of the beacon while it charges cancels the beam", not Rules.in_ship(me().position) and gear(Tools.BEACON) != null)
+	Net.leave()
+
+
+
+# --- The Gunner, the Ghost, the Mud Crawler, and things to find ----------------------
+
+func _beasts() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.goal_override = 5000
+	Session.results_seconds = 0.7
+	Session.start_run()
+	await until(func() -> bool: return me() != null, 3.0)
+	var room := FacilityLayout.cell_center(FacilityLayout.ENTRY_CELL)
+
+	# THE GUNNER: it aims, then fires. Duck out of sight and it misses.
+	await _fresh_round("foundry")
+	var gunner := Session.entity_of_kind("gunner") as Gunner
+	check("the Rust Foundry has a Gunner", gunner != null)
+	me().teleport(room + Vector3(0, 0.1, 3.0))
+	_face(false)
+	_wake(gunner, room + Vector3(0, 0, -3.0))
+	gunner.rotation.y = PI
+	var hp := _hp()
+	check("the Gunner takes aim when it sees you", await until(func() -> bool: return gunner.net_state == Gunner.AIMING, 2.0))
+	check("its red laser shows where it aims", gunner._laser.visible)
+	await wait(Gunner.AIM_SECONDS * 0.5)
+	check("it gives you a moment before it fires", _hp() == hp)
+	check("then it fires, and the shot hurts", await until(func() -> bool: return _hp() < hp, 2.0) and hp - _hp() == roundi(Gunner.DAMAGE * Rules.threat_power(1).damage) and "shot" in _effects)
+	check("it lowers the gun to reload", gunner.net_state == 0 and not gunner._laser.visible)
+	var wall := _find_wall()
+	if not wall.is_empty():
+		gunner.position = FacilityLayout.cell_center(wall[0])
+		gunner.net_pos = gunner.position
+		gunner.rotation.y = -PI * 0.5
+		gunner._reload_left = 0.0
+		me().teleport(FacilityLayout.cell_center(wall[0]) + Vector3(3.0, 0.1, 0))
+		check("it aims again once reloaded", await until(func() -> bool: return gunner.net_state == Gunner.AIMING, 2.0))
+		hp = _hp()
+		var shots := _effects.count("shot")
+		me().teleport(FacilityLayout.cell_center(wall[1]) + Vector3(0, 0.1, 0))
+		await until(func() -> bool: return _effects.count("shot") > shots, 3.0)
+		check("ducking behind a wall makes it miss", _effects.count("shot") == shots + 1 and _hp() == hp)
+	me().teleport(FacilityLayout.cell_center(FacilityLayout.cell_at(gunner.position)) + Vector3(0, 0.1, 2.5))
+	gunner._reload_left = 0.0
+	gunner.rotation.y = PI
+	await until(func() -> bool: return gunner.net_state == Gunner.AIMING, 2.0)
+	gunner.stun(1.0)
+	check("a stun spoils its aim", gunner.net_state == 0 and not gunner._laser.visible)
+	var spot := gunner.position
+	for hit in Entity.INFO.gunner.hits:
+		gunner.hurt(0.5)
+	check("three shovel hits finish a Gunner", Session.entity_of_kind("gunner") == null and "kill" in _effects)
+	await get_tree().physics_frame
+	var dropped := gear(Tools.SHOTGUN)
+	check("it drops its shotgun, with %d shells" % Gunner.SHELLS, dropped != null and dropped.charges == Gunner.SHELLS and Vector2(dropped.position.x - spot.x, dropped.position.z - spot.z).length() < 0.01)
+
+	# THE GHOST: walls don't stop it, light does.
+	await _fresh_round("cryo")
+	var ghost := Session.entity_of_kind("ghost") as Ghost
+	check("the Cryo Vault has a Ghost", ghost != null and absf(ghost.position.y - Ghost.HOVER) < 0.01)
+	me().net_flashlight = false
+	wall = _find_wall()
+	if not wall.is_empty():
+		me().teleport(FacilityLayout.cell_center(wall[0]) + Vector3(0, 0.1, 0))
+		_wake(ghost, FacilityLayout.cell_center(wall[1]))
+		check("a Ghost drifts straight through walls", await until(func() -> bool: return FacilityLayout.cell_at(ghost.position) == wall[0], 6.0))
+	else:
+		me().teleport(room + Vector3(0, 0.1, 3.0))
+		_wake(ghost, room + Vector3(0, 0, -3.0))
+	hp = _hp()
+	check("its touch hurts", await until(func() -> bool: return _hp() < hp, 6.0) and hp - _hp() == roundi(Ghost.DAMAGE * Rules.threat_power(1).damage))
+	check("then it fades and comes back far away", ghost.position.distance_to(me().position) > 12.0 and ghost.grace > 0.0)
+	me().teleport(room + Vector3(0, 0.1, 3.0))
+	_face(false)
+	me().net_flashlight = true
+	_wake(ghost, room + Vector3(0, 0, -3.0))
+	var start_gap := ghost.position.distance_to(me().position)
+	check("your flashlight beam drives it back", await until(func() -> bool: return ghost.net_state == Ghost.FLEEING, 1.0))
+	await wait(0.5)
+	check("it backs away from the light", ghost.position.distance_to(me().position) > start_gap)
+	_face(true)
+	await wait(0.6)
+	check("look away and it comes again", ghost.net_state == 0 and ghost.position.distance_to(me().position) < start_gap + 3.0)
+	me().net_flashlight = false
+	_face(false)
+	var flare := _give(Tools.FLARE)
+	_wake(ghost, room + Vector3(0, 0, -4.5))
+	await _use_gear()
+	check("a thrown flare burns", flare != null and flare.armed and flare.holder_id == 0)
+	await wait(0.6)
+	check("a burning flare keeps a Ghost away", ghost.net_state == Ghost.FLEEING)
+	Session.request_pickup.rpc_id(1, flare.item_id)
+	check("a burning flare can't be picked up", flare.holder_id == 0)
+	var booms := _effects.count("boom") + _effects.count("flashbang")
+	Session._fuses[flare] = 0.05
+	var flare_id := flare.item_id
+	check("it burns out without a bang", await until(func() -> bool: return item(flare_id) == null, 2.0) and _effects.count("boom") + _effects.count("flashbang") == booms)
+	ghost.hurt(1.0)
+	check("nothing can hurt a Ghost", ghost.get_parent() == Session.entity_root)
+	me().teleport(Vector3(0, 0.1, -9.0))
+	_wake(ghost, room + Vector3(0, 0, -1.0))
+	await wait(1.5)
+	check("a Ghost never comes into the ship", not Rules.in_ship(ghost.position))
+	me().net_flashlight = true
+
+	# THE MUD CRAWLER: slow, but its mud slows you more.
+	await _fresh_round("biolab")
+	var mud := Session.entity_of_kind("mud") as MudCrawler
+	check("the Bio Lab has a Mud Crawler", mud != null)
+	me().teleport(room + Vector3(0, 0.1, 3.0))
+	_wake(mud, room + Vector3(0, 0, -2.0))
+	var gap := mud.position.distance_to(me().position)
+	check("it oozes toward you", await until(func() -> bool: return mud.position.distance_to(me().position) < gap - 1.0, 3.0))
+	check("it leaves a trail of mud", await until(func() -> bool: return mud.net_trail.size() >= 2, 3.0))
+	hp = _hp()
+	check("its touch hurts", await until(func() -> bool: return _hp() < hp, 6.0) and hp - _hp() == roundi(MudCrawler.DAMAGE * Rules.threat_power(1).damage))
+	mud.enabled = false
+	me().teleport(mud.net_trail[0] + Vector3(0, 0.1, 0))
+	me().bot_move = Vector2(1, 0)
+	for frame in 4:
+		await get_tree().physics_frame
+	check("mud slows you down (%.2f m/s)" % _speed(), absf(_speed() - Player.WALK_SPEED * MudCrawler.SLOW) < 0.1)
+	me().teleport(room + Vector3(-3.0, 0.1, 0.0)) # Clear of the mud, and of the props in the corners.
+	for frame in 4:
+		await get_tree().physics_frame
+	check("out of the mud you're quick again", absf(_speed() - Player.WALK_SPEED) < 0.1)
+	me().bot_move = Vector2.ZERO
+	for hit in Entity.INFO.mud.hits:
+		mud.hurt(0.5)
+	check("four shovel hits break up a Mud Crawler", Session.entity_of_kind("mud") == null)
+
+	# THINGS TO FIND.
+	await _fresh_round("foundry")
+	var found := 0
+	for thing: Scrap in Session.scrap_root.get_children():
+		if Tools.is_find(thing.kind):
+			found += 1
+	check("useful items lie around the facility (%d)" % found, found == Session.layout.finds.size() and found > 0)
+	check("found items don't count toward the crew's gear limit", Session.gear_count() == 0)
+	check("new kinds of scrap appear", Session.scrap_root.get_children().any(func(thing: Scrap) -> bool: return thing.kind in ["Glass valve", "Cargo case", "Conveyor grate", "Piston"]))
+	for thing: Scrap in Session.scrap_root.get_children():
+		if Tools.is_find(thing.kind):
+			Session.scrap_root.remove_child(thing)
+			thing.queue_free()
+	me().teleport(room + Vector3(0, 0.1, 3.0))
+	Session.player_states[1].hp = 40
+	_give(Tools.MEDKIT)
+	await wait(0.1)
+	check("the prompt offers to patch you up", me().interact_prompt.contains("patch yourself up"))
+	await _use_gear()
+	check("a med kit heals %d" % Tools.MEDKIT_HEAL, _hp() == 40 + Tools.MEDKIT_HEAL and gear(Tools.MEDKIT) == null)
+	Session.player_states[1].hp = Rules.PLAYER_MAX_HP
+	_give(Tools.MEDKIT)
+	await _use_gear()
+	check("at full health a med kit isn't wasted", gear(Tools.MEDKIT) != null)
+	_give(Tools.SHOTGUN).charges = 0
+	_give(Tools.ZAP_GUN).charges = 1
+	_give(Tools.BATTERY)
+	await _use_gear()
+	check("a battery refills every gun you carry", gear(Tools.SHOTGUN).charges == Tools.CATALOG[Tools.SHOTGUN].charges and gear(Tools.ZAP_GUN).charges == Tools.CATALOG[Tools.ZAP_GUN].charges and gear(Tools.BATTERY) == null)
+	_give(Tools.BATTERY)
+	await _use_gear()
+	check("with nothing to refill a battery isn't wasted", gear(Tools.BATTERY) != null)
+	var golden: Scrap = null
+	for thing: Scrap in Session.scrap_root.get_children():
+		if not thing.is_tool():
+			golden = thing
+			break
+	Session.scrap_root.remove_child(golden)
+	golden.free()
+	Session._scrap_spawner.spawn({"id": 9000, "kind": FacilityLayout.RARE_SCRAP, "value": 200, "weight": 0.08, "pos": room + Vector3(0, Scrap.FLOOR_HEIGHT, 0)})
+	check("a golden cog is worth a lot", item(9000) != null and item(9000).describe() == "Golden cog ($200)")
 	Net.leave()

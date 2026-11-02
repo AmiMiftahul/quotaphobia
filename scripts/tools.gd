@@ -12,6 +12,11 @@ const FLASHBANG := "Flashbang"
 const ADRENALINE := "Adrenaline shot"
 const SCOOTER := "Hover scooter"
 const BEACON := "Recall beacon"
+# Found in the facility, never sold.
+const MEDKIT := "Med kit"
+const FLARE := "Flare"
+const BATTERY := "Battery"
+const FINDS: Array[String] = [MEDKIT, FLARE, BATTERY]
 const ORDER: Array[String] = [SHOVEL, STUN_GRENADE, FLASHBANG, ZAP_GUN, SHOTGUN, ADRENALINE, SCOOTER, BEACON, CAMCORDER]
 # What a gacha capsule can hold: everyday gear, or a rare piece.
 const GACHA_GEAR: Array[String] = [SHOVEL, STUN_GRENADE, FLASHBANG, ADRENALINE]
@@ -48,6 +53,18 @@ const CATALOG := {
 	BEACON: {
 		"price": 50, "weight": 0.03, "charges": 0,
 		"about": "Hold it up and after 2 seconds you're beamed back into the ship with everything you carry. Only works on the ground. One use.",
+	},
+	MEDKIT: {
+		"price": 0, "weight": 0.04, "charges": 0, "found": true,
+		"about": "Found in the facility. Patches you up for 50 health. One use.",
+	},
+	FLARE: {
+		"price": 0, "weight": 0.02, "charges": 0, "found": true,
+		"about": "Found in the facility. Throw it and it burns bright red for 30 seconds. Ghosts won't come near it.",
+	},
+	BATTERY: {
+		"price": 0, "weight": 0.03, "charges": 0, "found": true,
+		"about": "Found in the facility. Refills every zap gun and shotgun you carry. One use.",
 	},
 	CAMCORDER: {
 		"price": 40, "weight": 0.05, "charges": 0,
@@ -89,6 +106,10 @@ const SCOOTER_SPEED := 8.0
 const BEACON_SECONDS := 2.0
 const BEACON_SPOT := Vector3(0.0, 0.1, -9.0) # Where the beam puts you down, in the ship.
 const BEACON_GREEN := Color(0.4, 1.0, 0.55)
+const MEDKIT_HEAL := 50
+const FLARE_SECONDS := 30.0
+const FLARE_RADIUS := 8.0 # Ghosts keep at least this far from a burning flare.
+const FLARE_RED := Color(1.0, 0.25, 0.15)
 # What the camcorder stores. A clip is a run of small JPEG pictures, so it can travel
 # between players without a video codec.
 const TAPE_LIMIT := 12 # Recordings kept; a new one pushes out the oldest.
@@ -112,6 +133,11 @@ static func is_gear(kind: String) -> bool:
 	return CATALOG.has(kind)
 
 
+## Picked up in the facility rather than bought. It doesn't count toward the crew's gear limit.
+static func is_find(kind: String) -> bool:
+	return CATALOG.has(kind) and CATALOG[kind].get("found", false)
+
+
 # --- What happens: these run on the host, in the physics step, so walls can be checked ---
 
 ## Uses the item and returns how long until this player can use something again.
@@ -123,8 +149,19 @@ static func use(player: Player, item: Scrap) -> float:
 		ZAP_GUN:
 			_zap(player, item)
 			return ZAP_COOLDOWN
-		STUN_GRENADE, FLASHBANG:
+		STUN_GRENADE, FLASHBANG, FLARE:
 			_throw(player, item)
+			return THROW_COOLDOWN
+		MEDKIT:
+			if Session.player_states[player.peer_id].hp >= Rules.PLAYER_MAX_HP:
+				Session.play_effect("fizzle", player.net_pos, player.net_pos, item.item_id)
+				return THROW_COOLDOWN
+			Session.play_effect("patched", player.net_pos, player.net_pos, item.item_id)
+			Session.use_up(item)
+			Session.heal_player(player.peer_id, MEDKIT_HEAL)
+			return THROW_COOLDOWN
+		BATTERY:
+			_recharge(player, item)
 			return THROW_COOLDOWN
 		SHOTGUN:
 			_fire(player, item)
@@ -140,9 +177,27 @@ static func use(player: Player, item: Scrap) -> float:
 	return 0.0
 
 
-## How long a thrown piece of gear takes to go off.
+## How long a thrown piece of gear takes to go off, or for a flare, to burn out.
 static func fuse_for(kind: String) -> float:
-	return FLASH_FUSE if kind == FLASHBANG else FUSE_SECONDS
+	match kind:
+		FLASHBANG: return FLASH_FUSE
+		FLARE: return FLARE_SECONDS
+	return FUSE_SECONDS
+
+
+## Fills every zap gun and shotgun this player carries. Nothing to fill, nothing used.
+static func _recharge(player: Player, item: Scrap) -> void:
+	var filled := false
+	for gear: Scrap in Session.items_held_by(player.peer_id):
+		var most: int = CATALOG[gear.kind].charges if gear.is_tool() else 0
+		if most > 0 and gear.charges < most:
+			gear.charges = most
+			filled = true
+	if not filled:
+		Session.play_effect("fizzle", player.net_pos, player.net_pos, item.item_id)
+		return
+	Session.play_effect("recharge", player.net_pos, player.net_pos, item.item_id)
+	Session.use_up(item)
 
 
 ## [radius, stun seconds, blind seconds] for whatever just went bang.
@@ -313,6 +368,20 @@ static func build_model(kind: String) -> Node3D:
 			var material: StandardMaterial3D = barrel.mesh.material
 			material.emission_enabled = true
 			material.emission = ZAP_BLUE
+		MEDKIT:
+			_part(root, _box(Vector3(0.3, 0.2, 0.12)), Vector3(0, 0.1, 0), Color(0.92, 0.92, 0.9))
+			_part(root, _box(Vector3(0.14, 0.04, 0.124)), Vector3(0, 0.1, 0), Color(0.85, 0.1, 0.1))
+			_part(root, _box(Vector3(0.04, 0.14, 0.124)), Vector3(0, 0.1, 0), Color(0.85, 0.1, 0.1))
+			_part(root, _box(Vector3(0.1, 0.03, 0.03)), Vector3(0, 0.215, 0), DARK)
+		FLARE:
+			var stick := _part(root, _cylinder(0.025, 0.26), Vector3(0, 0.03, 0), FLARE_RED)
+			stick.rotation.x = PI * 0.5
+			var cap := _part(root, _cylinder(0.028, 0.05), Vector3(0, 0.03, -0.15), DARK)
+			cap.rotation.x = PI * 0.5
+		BATTERY:
+			_part(root, _cylinder(0.05, 0.16), Vector3(0, 0.08, 0), DARK)
+			_part(root, _cylinder(0.052, 0.06), Vector3(0, 0.13, 0), YELLOW)
+			_part(root, _cylinder(0.02, 0.03), Vector3(0, 0.175, 0), METAL)
 		CAMCORDER:
 			_part(root, _box(Vector3(0.11, 0.13, 0.26)), Vector3(0, 0.1, 0), DARK)
 			var lens := _part(root, _cylinder(0.045, 0.08), Vector3(0, 0.11, -0.16), LENS)

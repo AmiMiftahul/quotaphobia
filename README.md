@@ -113,6 +113,25 @@ again, up to $9,999 for one piece of scrap. Only scrap is accepted, never gear, 
 runs at a time. The host rolls every bet, so nobody can cheat, and the whole crew sees and hears
 the result. The odds are `GAMBLE_TABLE` in `scripts/rules.gd`.
 
+## Scrap and things to find
+
+There are 11 kinds of scrap. Small things like levers and gears are light and cheap; big ones
+like pistons, cargo cases and glass valves are worth more but slow you down more. About 1 in 30
+pieces is a **golden cog**, worth $160 to $260 and easy to spot by its gold glow. Mimics never
+pretend to be one.
+
+Every facility also has a few useful items lying around: 3 on the smallest sites and up to 6 on
+the biggest. They're free, and they don't count toward the crew's 12 pieces of gear.
+
+| Item | What it does |
+|---|---|
+| Med kit | Left click to heal 50. At full health it isn't used up |
+| Flare | Left click to throw it. It burns bright red for 30 seconds, and Ghosts won't come within 8 m |
+| Battery | Left click to refill every zap gun and shotgun you carry. With nothing to refill it isn't used up |
+
+Value and weight ranges are `SCRAP_INFO` in `scripts/facility_layout.gd`; the items are in
+`scripts/tools.gd`.
+
 ## The capsule gacha
 
 Across the door from Scrap Slots stands the **capsule gacha**. Walk up and press **E** to pull
@@ -186,10 +205,10 @@ Lab the fewest. Sizes are in `SITE_INFO` in `scripts/rules.gd`.
 
 | Map | Vibe | Its rule | Who's there |
 |---|---|---|---|
-| Rust Foundry | Hot orange light, heavy machines | Lots of side routes | Stalker, Mimics, Sentinels |
-| Cryo Vault | Thick pale-blue fog | Stamina recovers at half speed | Watchers, Patch |
-| Bio Lab | Sickly green, failing lights | Tight corridors, few loops | Stalker, toxic vents, Mimic, Patch |
-| Blackout Reactor | Near-black, red alarm pulses | Scrap worth 30% more | Listeners, Watcher, Wisp, Sentinel |
+| Rust Foundry | Hot orange light, heavy machines | Lots of side routes | Stalker, Gunner, Mimics, Sentinels |
+| Cryo Vault | Thick pale-blue fog | Stamina recovers at half speed | Watchers, Ghost, Patch |
+| Bio Lab | Sickly green, failing lights | Tight corridors, few loops | Stalker, Mud Crawler, toxic vents, Mimic, Patch |
+| Blackout Reactor | Near-black, red alarm pulses | Scrap worth 30% more | Listeners, Watcher, Wisp, Sentinel (Ghosts on later days) |
 
 | Threat | What it does | How to beat it |
 |---|---|---|
@@ -198,6 +217,9 @@ Lab the fewest. Sizes are in `SITE_INFO` in `scripts/rules.gd`.
 | Listener | Blind; rushes toward noise | Walk or stand still; never sprint nearby |
 | Mimic | Looks like scrap, bites when you get close | Real scrap shows a pick-up prompt |
 | Toxic vent | Fills a room with gas on a timer | Wait for it to close, then cross |
+| Gunner | A soldier with a shotgun. When it sees you it aims a red laser for 1.2 seconds, then fires (45 damage) | Get out of its sight before it fires. 3 shovel hits drop it, and it leaves its shotgun behind with 2 shells |
+| Ghost | Floats straight through walls toward the nearest player. Its touch does 30 damage, then it vanishes and comes back far away | Shine your flashlight on it to drive it back, or throw a flare: it won't come near one. Nothing can hurt it |
+| Mud Crawler | A slow heap of mud that follows you and leaves puddles. Mud halves your speed, and touching it hurts | Keep out of its mud. 4 shovel hits break it up |
 
 | Helper | What it does |
 |---|---|
@@ -226,7 +248,7 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/gacha_station.gd` | How the capsule gacha looks and rolls. The prizes are picked in `session.gd`. |
 | `scripts/camcorder.gd` | Filming and playing back with the camcorder. Storing footage is in `session.gd`. |
 | `scripts/phone_camera.gd` | The phone, which saves photos and videos to your computer. |
-| `scripts/monster.gd`, `scripts/entities/` | Every creature and helper. |
+| `scripts/monster.gd`, `scripts/entities/` | Every creature and helper: one file each, like `gunner.gd`, `ghost.gd` and `mud.gd`. |
 | `scripts/map_themes.gd` | Every map's look, sound, rules and residents. |
 | `scripts/main.gd` | The title screen, menus and HUD, and the look they share. |
 | `scripts/menu_backdrop.gd` | The ship scene behind the title screen. |

@@ -15,7 +15,31 @@ const SCRAP_MODELS := {
 	"Control screen": "screen-small",
 	"Valve pipe": "pipe-large-valve",
 	"Spare lever": "lever-single",
+	"Glass valve": "pipe-glass-large-valve",
+	"Cargo case": "box-wide",
+	"Conveyor grate": "conveyor-bars-sides",
+	"Piston": "piston-round",
+	"Golden cog": "cog-a",
 }
+# [lowest, highest] value on the first round, and [lightest, heaviest] weight. Small
+# things are light and cheap; big ones are worth more but slow you down.
+const SCRAP_INFO := {
+	"Steel gear": {"value": [15, 35], "weight": [0.05, 0.12]},
+	"Old crate": {"value": [20, 45], "weight": [0.2, 0.35]},
+	"Warning beacon": {"value": [25, 50], "weight": [0.15, 0.25]},
+	"Control screen": {"value": [35, 70], "weight": [0.1, 0.2]},
+	"Valve pipe": {"value": [20, 40], "weight": [0.15, 0.3]},
+	"Spare lever": {"value": [10, 25], "weight": [0.05, 0.1]},
+	"Glass valve": {"value": [40, 80], "weight": [0.15, 0.3]},
+	"Cargo case": {"value": [25, 55], "weight": [0.25, 0.4]},
+	"Conveyor grate": {"value": [20, 40], "weight": [0.15, 0.3]},
+	"Piston": {"value": [35, 65], "weight": [0.2, 0.35]},
+	"Golden cog": {"value": [160, 260], "weight": [0.06, 0.1]},
+}
+const RARE_SCRAP := "Golden cog"
+const RARE_CHANCE := 0.03
+# What can be found lying around, and how often: [kind, share].
+const FIND_TABLE := [["Med kit", 0.4], ["Flare", 0.35], ["Battery", 0.25]]
 const PROP_CORNER := 3.2 # Props sit in room corners, clear of doors and walkways.
 const SCRAP_CLEARANCE := 2.2 # Scrap never lands where a prop could be.
 const MIN_ENTITY_ROOMS := 3 # Route length from the entry, so nothing starts on top of the crew.
@@ -37,6 +61,7 @@ var scrap_spawns: Array[Dictionary] = []
 var props: Array[Dictionary] = []
 var floor_details: Array[Vector3] = []
 var entity_spawns: Array[Dictionary] = []
+var finds: Array[Dictionary] = [] # Useful items lying around: {kind, pos}.
 var _open := {}
 var _hall_of := {} # cell -> its index in halls
 var _pillar_corners := {} # Grid corners with a pillar on them. Corner (x, y) is the top-left of cell (x, y).
@@ -60,6 +85,7 @@ func _init(seed_value: int, grid_size: int, round_number: int, required_value: i
 	_place_props()
 	_place_scrap(round_number, required_value)
 	_place_entities(round_number)
+	_place_finds()
 
 
 func has_cell(cell: Vector2i) -> bool:
@@ -141,7 +167,10 @@ func fingerprint() -> int:
 	var entities: Array = []
 	for entity in entity_spawns:
 		entities.append([entity.kind, entity.pos])
-	return hash([map_id, site, size, edges, halls, pillars, scrap, monster_spawn, prop_data, entities])
+	var found: Array = []
+	for find in finds:
+		found.append([find.kind, find.pos])
+	return hash([map_id, site, size, edges, halls, pillars, scrap, monster_spawn, prop_data, entities, found])
 
 
 func _edge_key(a: Vector2i, b: Vector2i) -> Vector4i:
@@ -253,20 +282,45 @@ func _place_scrap(round_number: int, required_value: int) -> void:
 	# Bigger sites hold more scrap than usual for the round, smaller ones less.
 	var usual := Rules.grid_size(round_number)
 	var count := maxi(4, roundi((8 + 2 * round_number) * float(size * size) / (usual * usual)))
-	var kinds: Array = SCRAP_MODELS.keys()
+	var kinds: Array = common_scrap()
 	# Always leave 50% more value than the quota, so every round can be won.
 	while scrap_spawns.size() < count or total < int(required_value * 1.5):
 		var cell := ENTRY_CELL
 		while cell == ENTRY_CELL:
 			cell = Vector2i(_rng.randi_range(0, size - 1), _rng.randi_range(0, size - 1))
-		var value := int(_rng.randi_range(15, 60) * (1.0 + 0.1 * (round_number - 1)) * theme.scrap_value)
+		var kind: String = RARE_SCRAP if _rng.randf() < RARE_CHANCE else kinds[_rng.randi_range(0, kinds.size() - 1)]
+		var info: Dictionary = SCRAP_INFO[kind]
+		var value := int(_rng.randi_range(info.value[0], info.value[1]) * (1.0 + 0.1 * (round_number - 1)) * theme.scrap_value)
 		scrap_spawns.append({
 			"pos": cell_center(cell) + _random_room_offset(),
 			"value": value,
-			"weight": _rng.randf_range(0.05, 0.35),
-			"kind": kinds[_rng.randi_range(0, kinds.size() - 1)],
+			"weight": _rng.randf_range(info.weight[0], info.weight[1]),
+			"kind": kind,
 		})
 		total += value
+
+
+## Every scrap kind but the rare one. Mimics only ever pretend to be these.
+static func common_scrap() -> Array:
+	var kinds: Array = SCRAP_MODELS.keys()
+	kinds.erase(RARE_SCRAP)
+	return kinds
+
+
+## A few useful things lie around each facility: more in bigger ones.
+func _place_finds() -> void:
+	for index in 1 + size / 2:
+		var cell := ENTRY_CELL
+		while cell == ENTRY_CELL:
+			cell = Vector2i(_rng.randi_range(0, size - 1), _rng.randi_range(0, size - 1))
+		var roll := _rng.randf()
+		var kind: String = FIND_TABLE.back()[0]
+		for row: Array in FIND_TABLE:
+			roll -= row[1]
+			if roll < 0.0:
+				kind = row[0]
+				break
+		finds.append({"kind": kind, "pos": cell_center(cell) + _random_room_offset()})
 
 
 ## The map's residents, plus one more threat for every two rounds survived.
@@ -297,7 +351,7 @@ func _place_entities(round_number: int) -> void:
 			pos = cell_center(cell)
 			var data := {"kind": kind, "index": entity_spawns.size(), "pos": pos}
 			if kind == "mimic":
-				var scrap_kinds: Array = SCRAP_MODELS.keys()
+				var scrap_kinds: Array = common_scrap()
 				data["pos"] = pos + _random_room_offset()
 				data["scrap_kind"] = scrap_kinds[_rng.randi_range(0, scrap_kinds.size() - 1)]
 			elif kind == "sentinel":
