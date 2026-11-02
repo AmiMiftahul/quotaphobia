@@ -5,10 +5,11 @@ extends Node3D
 ## room to room through door centres, so they can't clip walls.
 
 const THINK_SECONDS := 0.4
-# "hits": shovel blows that finish it off. 0 means no weapon can hurt it.
+# "hits": shovel blows that finish it off on level 1 (more on later levels). 0 means
+# nothing can hurt it, though gear can still stun it.
 const INFO := {
 	"stalker": {"hostile": true, "hits": 4, "hint": "THE STALKER: outrun it, break away, or reach the ship."},
-	"watcher": {"hostile": true, "hits": 3, "hint": "THE WATCHER: it only moves when nobody can see it. Keep your eyes on it."},
+	"watcher": {"hostile": true, "hits": 0, "hint": "THE WATCHER: it only moves when nobody can see it. Keep your eyes on it. Nothing can hurt it."},
 	"listener": {"hostile": true, "hits": 3, "hint": "THE LISTENER: it's blind and hunts by sound. Don't sprint. Stand still to hide."},
 	"mimic": {"hostile": true, "hits": 1, "hint": "A MIMIC: it looks like scrap. Real scrap shows a pick-up prompt. This didn't."},
 	"gas": {"hostile": true, "hits": 0, "hint": "TOXIC VENT: it opens and closes. Wait until it's clear, then cross."},
@@ -50,6 +51,7 @@ var _attack_timer := 0.0
 var _attack_show := 0.0
 var _stun_timer := 0.0
 var _hits_taken := 0
+var _power := Rules.threat_power(1) # How much this level strengthens a hunter.
 var _animator: AnimationPlayer
 var _last_position := Vector3.ZERO
 var _step_progress := 0.0
@@ -66,6 +68,8 @@ func setup(layout: FacilityLayout, data: Dictionary) -> void:
 	net_pos = data.pos
 	_last_position = data.pos
 	_rng.seed = hash([kind, data.index, data.pos])
+	# Helpers stay the same on every level; only hunters grow stronger.
+	_power = Rules.threat_power(data.get("level", 1) if INFO[kind].hostile else 1)
 	_build(data)
 	var on_change: Array[NodePath] = [^":net_state", ^":net_stunned", ^":net_attacks"]
 	on_change.append_array(_extra_synced())
@@ -78,24 +82,35 @@ func is_hostile() -> bool:
 
 ## Called on the host, by Sentinels and the crew's gear.
 func stun(seconds: float) -> void:
-	_stun_timer = seconds
+	_stun_timer = seconds * _power.stun
 	net_stunned = true
 	_waypoints.clear()
 
 
 ## Called on the host when a shovel lands. Each blow stuns; the last one finishes it.
 func hurt(stun_seconds: float) -> void:
-	if INFO[kind].hits <= 0:
+	if max_hits() <= 0:
 		return
 	_hits_taken += 1
-	if _hits_taken >= INFO[kind].hits:
+	if _hits_taken >= max_hits():
 		Session.kill_entity(self)
 	else:
 		stun(stun_seconds)
 
 
+## Shovel blows it takes on this level. A one-hit hunter stays one-hit.
+func max_hits() -> int:
+	var base: int = INFO[kind].hits
+	return base + _power.extra_hits if base > 1 else base
+
+
 func hits_left() -> int:
-	return INFO[kind].hits - _hits_taken
+	return max_hits() - _hits_taken
+
+
+## Damage after this level's strength is applied.
+func scaled_damage(base: int) -> int:
+	return roundi(base * _power.damage)
 
 
 func _physics_process(delta: float) -> void:
@@ -259,7 +274,7 @@ func _follow_path(speed: float, delta: float) -> void:
 	var target := _waypoints[0]
 	var to_target := target - position
 	to_target.y = 0.0
-	var step := speed * delta
+	var step: float = speed * _power.speed * delta
 	if to_target.length() <= step:
 		position = Vector3(target.x, position.y, target.z)
 		_waypoints.pop_front()
@@ -277,6 +292,6 @@ func _try_attack(attack_range: float, damage: int) -> bool:
 		if offset.length() < attack_range:
 			_attack_timer = Rules.MONSTER_ATTACK_COOLDOWN
 			net_attacks += 1
-			Session.damage_player(player.peer_id, damage)
+			Session.damage_player(player.peer_id, scaled_damage(damage))
 			return true
 	return false

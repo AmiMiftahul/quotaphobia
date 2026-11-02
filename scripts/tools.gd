@@ -10,7 +10,7 @@ const ORDER: Array[String] = [SHOVEL, STUN_GRENADE, ZAP_GUN]
 const CATALOG := {
 	SHOVEL: {
 		"price": 30, "weight": 0.08, "charges": 0,
-		"about": "Swing it to bonk a hunter. Every hit stuns it, and enough hits finish it off. It bonks crewmates too.",
+		"about": "Swing it to bonk a hunter. Each hit staggers it for a moment, and enough hits finish it off. It bonks crewmates too.",
 	},
 	STUN_GRENADE: {
 		"price": 25, "weight": 0.03, "charges": 0,
@@ -25,9 +25,11 @@ const FIRST_ID := 1000000 # Gear ids start here, far above any facility's scrap 
 
 const SHOVEL_RANGE := 2.4
 const SHOVEL_CONE := 0.5 # Dot product: about 60 degrees either side of where you face.
-const SHOVEL_STUN := 2.0
+# A hit staggers for less time than a swing takes, so a hunter always gets a moment to
+# strike back. A shovel fight is winnable, but it costs health.
+const SHOVEL_STUN := 0.6
 const SHOVEL_CREW_DAMAGE := 20
-const SHOVEL_COOLDOWN := 0.7
+const SHOVEL_COOLDOWN := 0.9
 const ZAP_RANGE := 15.0
 const ZAP_CONE := 0.92 # About 23 degrees: you have to actually aim.
 const ZAP_STUN := 5.0

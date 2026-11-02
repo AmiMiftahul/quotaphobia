@@ -17,11 +17,11 @@ within 4 days.
 
 ## Play it now
 
-Double-click **Quotaphobia** in this folder, then press **Play**. You start in your ship, in
+Double-click **Quotaphobia** in this folder, then press **Play** on the title screen. You start in your ship, in
 orbit. Buy gear at the terminal if you like, then walk to the console and press **E** to land.
 
 The ship in orbit is the lobby. Friends can join any time it's in orbit: before the first
-landing, and between days. They choose **Join a game** and type the address shown in the
+landing, and between days. They choose **Join a friend** and type the address shown in the
 top-right corner of your screen. Nobody can join while the crew is down on a map.
 For several windows on one Mac, run this command once per extra window:
 
@@ -72,9 +72,15 @@ but it's worth nothing when sold.
 
 | Gear | Price | What it does |
 |---|---|---|
-| Shovel | $30 | Left click to swing. Each hit stuns a hunter for 2 seconds. Enough hits finish it off: 4 for a Stalker, 3 for a Watcher or Listener, 1 for a Mimic. It also bonks crewmates (20 damage). |
+| Shovel | $30 | Left click to swing, once every 0.9 seconds. Each hit staggers a hunter for 0.6 seconds, so it always gets a moment to strike back. On level 1 a Stalker takes 4 hits, a Listener 3 and a Mimic 1. Nothing can hurt a Watcher. It also bonks crewmates (20 damage). |
 | Stun grenade | $25 | Left click to throw it about 7 m. After 1.5 seconds it stuns every hunter within 9 m that can see it, for 6 seconds. Players who look at it get a white screen. One use. |
 | Zap gun | $70 | Aim and left click to freeze the hunter you're pointing at for 5 seconds, up to 15 m away. 3 charges, refilled every time you're back in orbit. A miss costs nothing. |
+
+Hunters grow stronger each level, up to level 8. At full strength they move 21% faster,
+hit 56% harder, shake off stuns 35% sooner, and take 2 more shovel hits (Mimics still go down
+in one). Even then a sprint outruns a Stalker or a Listener, and no single hit kills a player at
+full health. Helpers never change. The numbers are in `Rules.threat_power` in
+`scripts/rules.gd`.
 
 Gear that's on the ship's floor, or in the hands of someone who makes it back, when the ship
 leaves is kept for the next day. Gear left outside is lost. A new run starts with $60 and no
@@ -138,7 +144,8 @@ everything that could be disputed: who holds what, who gets hurt, and when a rou
 | `scripts/tools.gd` | The gear sold at the terminal: prices, what each piece does, and how it looks. |
 | `scripts/monster.gd`, `scripts/entities/` | Every creature and helper. |
 | `scripts/map_themes.gd` | Every map's look, sound, rules and residents. |
-| `scripts/main.gd` | Menus and HUD. |
+| `scripts/main.gd` | The title screen, menus and HUD, and the look they share. |
+| `scripts/menu_backdrop.gd` | The ship scene behind the title screen. |
 | `scripts/autoload/sfx.gd` | Every sound, and how loud it plays. |
 | `scripts/autoload/store.gd` | The in-game shop. |
 | `supabase/functions/`, `cloud/store_schema.sql` | The payment server and its tables. |

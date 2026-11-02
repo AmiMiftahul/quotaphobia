@@ -1,7 +1,16 @@
 extends Control
 ## All the menus and the in-game HUD, built in code and switched by game phase.
 
-var _menu: PanelContainer
+const ACCENT := Color(1.0, 0.6, 0.22)
+const ACCENT_DARK := Color(0.78, 0.3, 0.07)
+const INK := Color(0.07, 0.06, 0.09)
+const VERSION := "0.1"
+
+var _menu: Control
+var _menu_main: VBoxContainer
+var _menu_join: VBoxContainer
+var _menu_credits: VBoxContainer
+var _backdrop: MenuBackdrop
 var _lobby: PanelContainer
 var _hud: Control
 var _pause: PanelContainer
@@ -56,6 +65,7 @@ func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	# This full-screen layer must let mouse movement through to the player's camera.
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	theme = _make_theme()
 	_build_menu()
 	_build_lobby()
 	_build_hud()
@@ -173,7 +183,10 @@ func _open_captures_folder() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _terminal_open and (event.is_action_pressed("pause") or event.is_action_pressed("ui_cancel")):
+	if _menu.visible and not _menu_main.visible and event.is_action_pressed("ui_cancel"):
+		_show_menu_page(_menu_main)
+		get_viewport().set_input_as_handled()
+	elif _terminal_open and (event.is_action_pressed("pause") or event.is_action_pressed("ui_cancel")):
 		_close_terminal()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("pause") and Session.in_world() and not _settings_open:
@@ -186,6 +199,7 @@ func _refresh() -> void:
 	var online := Net.is_online()
 	var phase := Session.phase
 	_menu.visible = not online and not _shop_open and not _settings_open
+	_set_backdrop(not online)
 	_shop.visible = not online and _shop_open and not Store.order.has("status")
 	_settings_menu.visible = _settings_open
 	_qr_panel.visible = not online and _shop_open and Store.order.has("status")
@@ -205,6 +219,25 @@ func _refresh() -> void:
 		lines.append(("%s (host)" if peer == 1 else "%s") % Net.players[peer])
 	_lobby_list.text = "\n".join(lines) if not lines.is_empty() else "Joining..."
 	_update_mouse()
+	_update_focus()
+
+
+## The ship behind the menu exists only while offline: in play, the real level takes over.
+func _set_backdrop(wanted: bool) -> void:
+	if wanted and _backdrop == null:
+		_backdrop = MenuBackdrop.new()
+		add_child(_backdrop)
+		move_child(_backdrop, 0)
+	elif not wanted and _backdrop != null:
+		remove_child(_backdrop)
+		_backdrop.queue_free()
+		_backdrop = null
+
+
+func _show_menu_page(page: VBoxContainer) -> void:
+	for each: VBoxContainer in [_menu_main, _menu_join, _menu_credits]:
+		each.visible = each == page
+	get_viewport().gui_release_focus()
 	_update_focus()
 
 
@@ -262,6 +295,7 @@ func _on_host_pressed() -> void:
 
 
 func _on_join_pressed() -> void:
+	_show_menu_page(_menu_main)
 	var address := _address_edit.text.strip_edges()
 	var error := Net.join(_name_edit.text, address if not address.is_empty() else "127.0.0.1")
 	if error != OK:
@@ -446,28 +480,190 @@ func _button(parent: Node, text: String, action: Callable) -> Button:
 	return button
 
 
+## The title screen: the ship behind, the game's name and buttons down the left, and
+## the leaderboard on the right.
 func _build_menu() -> void:
-	var parts := _panel()
-	_menu = parts[0]
-	var box: VBoxContainer = parts[1]
-	_label(box, "QUOTAPHOBIA", 36)
-	_label(box, "Your name")
+	_menu = Control.new()
+	_menu.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_menu.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_menu)
+	# Darkens the left side, so the buttons read clearly over the scene.
+	var gradient := Gradient.new()
+	gradient.set_color(0, Color(0.02, 0.015, 0.03, 0.92))
+	gradient.set_color(1, Color(0.02, 0.015, 0.03, 0.0))
+	var shade_texture := GradientTexture2D.new()
+	shade_texture.gradient = gradient
+	shade_texture.fill_to = Vector2(1, 0)
+	var shade := TextureRect.new()
+	shade.texture = shade_texture
+	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	shade.stretch_mode = TextureRect.STRETCH_SCALE
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shade.anchor_bottom = 1.0
+	shade.anchor_right = 0.62
+	_menu.add_child(shade)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 8)
+	column.position = Vector2(72, 56)
+	column.custom_minimum_size = Vector2(380, 0)
+	_menu.add_child(column)
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation", 14)
+	column.add_child(title_row)
+	var icon := TextureRect.new()
+	icon.texture = load("res://assets/icon/icon.png")
+	icon.custom_minimum_size = Vector2(72, 72)
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	title_row.add_child(icon)
+	var title := _label(title_row, "QUOTAPHOBIA", 50)
+	title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	title.add_theme_color_override("font_color", ACCENT)
+	title.add_theme_color_override("font_outline_color", Color(0.25, 0.05, 0.0))
+	title.add_theme_constant_override("outline_size", 10)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var tagline := _label(column, "Meet the quota. Don't meet what's down there.", 17)
+	tagline.add_theme_color_override("font_color", Color(0.85, 0.8, 0.75))
+	_spacer(column, 18)
+
+	_menu_main = VBoxContainer.new()
+	_menu_main.add_theme_constant_override("separation", 8)
+	column.add_child(_menu_main)
+	_small_heading(_menu_main, "YOUR NAME")
 	_name_edit = LineEdit.new()
 	_name_edit.text = "Player"
 	_name_edit.max_length = 16
-	box.add_child(_name_edit)
-	_play_button = _button(box, "Play (friends can join you)", _on_host_pressed)
-	_label(box, "Host's address (leave empty for this computer)")
+	_menu_main.add_child(_name_edit)
+	_spacer(_menu_main, 6)
+	_play_button = _button(_menu_main, "Play", _on_host_pressed)
+	_play_button.add_theme_font_size_override("font_size", 26)
+	_play_button.custom_minimum_size.y = 56
+	_play_button.tooltip_text = "Start in your ship. Friends can join any time it's in orbit."
+	_button(_menu_main, "Join a friend", func() -> void: _show_menu_page(_menu_join))
+	_shop_button = _button(_menu_main, "Shop", _on_shop_pressed)
+	_menu_settings_button = _button(_menu_main, "Settings", _open_settings)
+	_button(_menu_main, "Photos and videos", _open_captures_folder)
+	_button(_menu_main, "Credits", func() -> void: _show_menu_page(_menu_credits))
+	_button(_menu_main, "Quit", get_tree().quit)
+
+	_menu_join = VBoxContainer.new()
+	_menu_join.add_theme_constant_override("separation", 8)
+	_menu_join.visible = false
+	column.add_child(_menu_join)
+	_small_heading(_menu_join, "JOIN A FRIEND")
+	_label(_menu_join, "Type the address shown in the top-right corner of your friend's screen while their ship is in orbit. Leave it empty to join a game on this computer.", 16)
 	_address_edit = LineEdit.new()
 	_address_edit.placeholder_text = "127.0.0.1"
-	box.add_child(_address_edit)
-	_button(box, "Join a game", _on_join_pressed)
-	_shop_button = _button(box, "Shop", _on_shop_pressed)
-	_menu_settings_button = _button(box, "Settings", _open_settings)
-	_button(box, "My photos and videos", _open_captures_folder)
-	_button(box, "Quit", get_tree().quit)
-	_menu_status = _label(box, "")
-	_board_label = _label(box, "Loading leaderboard...", 14)
+	_menu_join.add_child(_address_edit)
+	var join := _button(_menu_join, "Join", _on_join_pressed)
+	join.add_theme_font_size_override("font_size", 24)
+	_button(_menu_join, "Back", func() -> void: _show_menu_page(_menu_main))
+
+	_menu_credits = VBoxContainer.new()
+	_menu_credits.add_theme_constant_override("separation", 8)
+	_menu_credits.visible = false
+	column.add_child(_menu_credits)
+	_small_heading(_menu_credits, "CREDITS")
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(440, 380)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_menu_credits.add_child(scroll)
+	var credits := _label(scroll, _credits_text(), 14)
+	credits.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_button(_menu_credits, "Back", func() -> void: _show_menu_page(_menu_main))
+
+	_menu_status = _label(column, "")
+	_menu_status.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+
+	# The leaderboard, as a card on the right.
+	var board := PanelContainer.new()
+	board.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_menu.add_child(board)
+	_board_label = _label(board, "Loading leaderboard...", 15)
+	# Without wrapping, the card is exactly as big as what it says.
+	_board_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	# Pinned to the top-right corner; it grows left and down to fit what it says.
+	board.anchor_left = 1.0
+	board.anchor_right = 1.0
+	board.offset_right = -40.0
+	board.offset_left = -40.0
+	board.offset_top = 56.0
+	board.offset_bottom = 56.0
+	board.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	var version := _label(_menu, "Version %s    Made with Godot Engine" % VERSION, 13)
+	version.autowrap_mode = TextServer.AUTOWRAP_OFF
+	version.add_theme_color_override("font_color", Color(0.7, 0.68, 0.66))
+	version.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 24)
+	version.grow_vertical = Control.GROW_DIRECTION_BEGIN
+
+
+## The Godot license asks for its notice to ship with the game; this is where it lives.
+func _credits_text() -> String:
+	return "\n".join([
+		"QUOTAPHOBIA, version %s" % VERSION,
+		"",
+		"Art and sound by Kenney (kenney.nl), released under CC0.",
+		"The game icon and ambient hum were made for this game.",
+		"",
+		"Made with Godot Engine (godotengine.org), used under the MIT license:",
+		"",
+		Engine.get_license_text(),
+	])
+
+
+func _small_heading(parent: Node, text: String) -> Label:
+	var heading := _label(parent, text, 13)
+	heading.add_theme_color_override("font_color", ACCENT)
+	return heading
+
+
+func _spacer(parent: Node, height: float) -> void:
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, height)
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(gap)
+
+
+## One look for every menu and panel: dark glass, warm orange like the game's icon.
+func _make_theme() -> Theme:
+	var look := Theme.new()
+	var normal := _box(Color(INK, 0.82), Color(1, 1, 1, 0.08))
+	var hover := _box(ACCENT_DARK, ACCENT)
+	var pressed := _box(Color(0.55, 0.2, 0.04), ACCENT)
+	var focus := _box(Color(0, 0, 0, 0), ACCENT)
+	focus.draw_center = false
+	focus.set_border_width_all(2)
+	var disabled := _box(Color(INK, 0.5), Color(1, 1, 1, 0.04))
+	for state: String in ["normal", "hover", "pressed", "focus", "disabled", "hover_pressed"]:
+		var style: StyleBoxFlat = {"normal": normal, "hover": hover, "pressed": pressed, "focus": focus, "disabled": disabled, "hover_pressed": pressed}[state]
+		look.set_stylebox(state, "Button", style)
+	look.set_color("font_color", "Button", Color(0.95, 0.93, 0.9))
+	look.set_color("font_hover_color", "Button", Color.WHITE)
+	look.set_color("font_pressed_color", "Button", Color.WHITE)
+	look.set_color("font_focus_color", "Button", Color.WHITE)
+	look.set_color("font_disabled_color", "Button", Color(0.55, 0.53, 0.52))
+	look.set_font_size("font_size", "Button", 19)
+	look.set_stylebox("panel", "PanelContainer", _box(Color(0.05, 0.04, 0.07, 0.9), Color(ACCENT, 0.25)))
+	var field := _box(Color(0.02, 0.02, 0.03, 0.85), Color(1, 1, 1, 0.15))
+	look.set_stylebox("normal", "LineEdit", field)
+	var field_focus := _box(Color(0.02, 0.02, 0.03, 0.9), ACCENT)
+	look.set_stylebox("focus", "LineEdit", field_focus)
+	look.set_font_size("font_size", "LineEdit", 18)
+	return look
+
+
+func _box(fill: Color, border: Color) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = fill
+	box.border_color = border
+	box.set_border_width_all(1)
+	box.set_corner_radius_all(6)
+	box.content_margin_left = 16
+	box.content_margin_right = 16
+	box.content_margin_top = 8
+	box.content_margin_bottom = 8
+	return box
 
 
 func _build_lobby() -> void:

@@ -255,6 +255,24 @@ func _unit() -> void:
 	expected_order.sort()
 	check("each run visits all four maps, in the same order for everyone", same_order and sorted_order == expected_order)
 	check("the Listener hears sprinting far, walking near, stillness never", Listener.heard_from(6.5) > Listener.heard_from(4.0) and Listener.heard_from(4.0) > 0.0 and Listener.heard_from(0.0) == 0.0)
+
+	# Balance: hunters grow stronger each level, but never out of reach.
+	var first := Rules.threat_power(1)
+	check("level 1 hunters are at their base strength", first.speed == 1.0 and first.damage == 1.0 and first.stun == 1.0 and first.extra_hits == 0)
+	var grows := true
+	for level_no in range(2, 15):
+		var before := Rules.threat_power(level_no - 1)
+		var now := Rules.threat_power(level_no)
+		grows = grows and now.speed >= before.speed and now.damage >= before.damage and now.stun <= before.stun and now.extra_hits >= before.extra_hits
+	check("hunters never get weaker as levels go up", grows)
+	check("hunters get stronger by level 4", Rules.threat_power(4).speed > 1.0 and Rules.threat_power(4).damage > 1.0 and Rules.threat_power(4).extra_hits == 1)
+	var top := Rules.threat_power(99)
+	check("hunters stop getting stronger after level 8", top == Rules.threat_power(Rules.MAX_THREAT_STEP + 1) and top != Rules.threat_power(Rules.MAX_THREAT_STEP))
+	check("at full strength a sprint still outruns the Stalker", Monster.CHASE_SPEED * top.speed < Player.SPRINT_SPEED)
+	check("at full strength a sprint still outruns a rushing Listener", Listener.RUSH_SPEED * top.speed < Player.SPRINT_SPEED)
+	check("at full strength no single hit kills a healthy player", roundi(maxi(Rules.MONSTER_DAMAGE, maxi(Watcher.DAMAGE, Listener.DAMAGE)) * top.damage) < Rules.PLAYER_MAX_HP)
+	check("at full strength stuns still last", top.stun >= 0.6)
+	check("a shovel never stun-locks: each hit wears off before the next swing", Tools.SHOVEL_STUN < Tools.SHOVEL_COOLDOWN)
 	await wait(0.01)
 
 
@@ -564,6 +582,27 @@ func _ui() -> void:
 	add_child(main)
 	await _shot("1_menu")
 	check("the menu shows at launch", main._menu.visible and not main._lobby.visible)
+	check("the ship shows behind the menu", main._backdrop != null and main._backdrop.is_inside_tree() and main._backdrop._camera.current)
+	var menu_screen := get_viewport().get_visible_rect()
+	var buttons_fit := true
+	for button: Button in main._menu.find_children("*", "Button", true, false):
+		if button.is_visible_in_tree():
+			buttons_fit = buttons_fit and menu_screen.encloses(button.get_global_rect())
+	check("every menu button is on screen", buttons_fit)
+	check("the menu starts with Play selected, for controllers", get_viewport().gui_get_focus_owner() == main._play_button)
+	_menu_button(main, "Credits").pressed.emit()
+	await wait(0.2)
+	check("Credits show the Godot license notice", main._menu_credits.visible and not main._menu_main.visible and main._credits_text().contains("Permission is hereby granted"))
+	await _shot("1b_credits")
+	await _press(KEY_ESCAPE)
+	check("Esc goes back to the main menu", main._menu_main.visible and not main._menu_credits.visible)
+	_menu_button(main, "Join a friend").pressed.emit()
+	await wait(0.2)
+	check("Join a friend opens the address box", main._menu_join.visible and main._address_edit.is_visible_in_tree())
+	await _shot("1c_join")
+	_menu_button(main, "Back").pressed.emit()
+	await wait(0.1)
+	check("Back returns to the main menu", main._menu_main.visible and not main._menu_join.visible)
 
 	main._name_edit.text = "  A very long player name indeed  "
 	Session.entities_enabled = false
@@ -575,6 +614,7 @@ func _ui() -> void:
 	await wait(0.3)
 	check("long names are trimmed", Net.players[1].length() <= 16 and not Net.players[1].begins_with(" "))
 	check("the ship is the lobby: the game shows, not a menu", main._hud.visible and not main._lobby.visible and not main._menu.visible)
+	check("the menu's backdrop is gone once you're playing", main._backdrop == null)
 	check("the crew list shows in orbit", main._crew_panel.visible and main._crew_label.text.begins_with("CREW 1 / 4"))
 	check("the HUD says the ship is in orbit, with the crew's credits", main._top_label.text.begins_with("IN ORBIT") and main._top_label.text.contains("Credits $60"))
 	check("the banner says where the ship lands next", main._banner_label.visible and main._banner_label.text.contains("Rust Foundry"))
@@ -888,7 +928,7 @@ func _ui() -> void:
 	Session.entities_enabled = false
 	Net.leave()
 	await wait(0.2)
-	check("leaving returns to the menu", main._menu.visible)
+	check("leaving returns to the menu", main._menu.visible and main._backdrop != null)
 
 	# One click from the menu back into the ship.
 	Session.forced_maps = ["cryo"]
@@ -898,7 +938,14 @@ func _ui() -> void:
 	check("the next stop follows the run's maps", Session.next_map == "cryo")
 	Net.leave()
 	await wait(0.2)
-	check("leaving returns to the menu", main._menu.visible)
+	check("leaving returns to the menu", main._menu.visible and main._backdrop != null)
+
+
+func _menu_button(main: Control, text: String) -> Button:
+	for button: Button in main._menu.find_children("*", "Button", true, false):
+		if button.text == text and button.is_visible_in_tree():
+			return button
+	return null
 
 
 func _pad_button(button: JoyButton) -> void:
@@ -2237,12 +2284,14 @@ func _scenario_orbit() -> void:
 	await barrier("bonked", 4)
 	# Mashing the button doesn't swing any faster than the shovel can.
 	if idx == 1:
-		await wait(0.8) # Past the first swing's cooldown, so exactly one of these lands.
+		await wait(1.0) # Past the first swing's cooldown, so exactly one of these lands.
 		for press in 4:
 			Session.request_use_item.rpc_id(1)
 			await get_tree().physics_frame
+	var after_mash := Rules.PLAYER_MAX_HP - 2 * Tools.SHOVEL_CREW_DAMAGE
+	check("mashing the button lands one swing", await until(func() -> bool: return Session.player_states[bot2].hp <= after_mash, 5.0))
 	await wait(1.0)
-	check("mashing the button swings only once", Session.player_states[bot2].hp == Rules.PLAYER_MAX_HP - 2 * Tools.SHOVEL_CREW_DAMAGE)
+	check("mashing the button swings only once", Session.player_states[bot2].hp == after_mash)
 	await barrier("mashed", 4)
 
 	# The friend who joined late lands the ship, and the gear comes along.
@@ -2276,7 +2325,7 @@ func _give(kind: String) -> Scrap:
 
 
 func _use_gear() -> void:
-	await wait(0.8) # Longer than any piece of gear needs between uses.
+	await wait(1.0) # Longer than any piece of gear needs between uses.
 	Session.request_use_item.rpc_id(1)
 	await get_tree().physics_frame
 	await get_tree().physics_frame
@@ -2383,7 +2432,7 @@ func _gear() -> void:
 	await _use_gear()
 	check("a shovel only hits what's in front of you", stalker.hits_left() == full - 1)
 	await _face_off(stalker, 1.8)
-	await wait(0.8)
+	await wait(1.0)
 	for press in 3:
 		Session.request_use_item.rpc_id(1)
 	await get_tree().physics_frame
@@ -2419,8 +2468,34 @@ func _gear() -> void:
 	crewmate.queue_free()
 	Session.player_states.erase(999)
 
+	# Tougher levels make tougher hunters; helpers stay the same.
+	Session.level_number = 8
+	await _fresh_round("foundry")
+	var strong := Session.entity_of_kind("stalker")
+	check("a level 8 Stalker takes more shovel hits", strong.max_hits() == Entity.INFO.stalker.hits + 2)
+	check("a level 8 Mimic still goes down in one", Session.entity_of_kind("mimic").max_hits() == 1)
+	strong.stun(1.0)
+	check("a level 8 hunter shakes off stuns sooner", is_equal_approx(strong._stun_timer, 0.65))
+	strong.net_stunned = false
+	strong._stun_timer = 0.0
+	check("helpers don't change with the level", Session.entity_of_kind("sentinel")._power.speed == 1.0)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, FACE_OFF_Z))
+	await get_tree().physics_frame
+	_wake(strong, Vector3(0, 0, FACE_OFF_Z - 1.0))
+	check("a level 8 Stalker hits harder", await until(func() -> bool: return _hp() < Rules.PLAYER_MAX_HP, 3.0) and Rules.PLAYER_MAX_HP - _hp() == roundi(Rules.MONSTER_DAMAGE * Rules.threat_power(8).damage))
+	strong.enabled = false
+	Session.level_number = 1
+
 	# THE ZAP GUN, against the Watcher.
 	await _fresh_round("cryo")
+	var stone := _give(Tools.SHOVEL)
+	var statue := Session.entity_of_kind("watcher")
+	await _face_off(statue, 1.8)
+	await _use_gear()
+	check("nothing can hurt a Watcher", statue.get_parent() == Session.entity_root and statue.hits_left() == 0)
+	Session.scrap_root.remove_child(stone)
+	stone.queue_free()
 	var zap := _give(Tools.ZAP_GUN)
 	check("a zap gun comes charged", zap.charges == Tools.CATALOG[Tools.ZAP_GUN].charges)
 	var watcher := Session.entity_of_kind("watcher")

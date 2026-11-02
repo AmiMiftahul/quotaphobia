@@ -315,7 +315,9 @@ func _begin_round(number: int) -> void:
 		data["id"] = index + 1
 		_scrap_spawner.spawn(data)
 	for data: Dictionary in layout.entity_spawns:
-		_entity_spawner.spawn(data)
+		var spawn := data.duplicate()
+		spawn["level"] = level_number # Hunters grow stronger with each level.
+		_entity_spawner.spawn(spawn)
 	for entity: Entity in entity_root.get_children():
 		entity.enabled = entities_enabled
 
