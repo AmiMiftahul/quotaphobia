@@ -82,13 +82,14 @@ func play_2d(bank: String, volume_db: float = 0.0) -> void:
 	player.play()
 
 
-func play_3d(bank: String, pos: Vector3, volume_db: float = 0.0, max_distance: float = 30.0) -> void:
+func play_3d(bank: String, pos: Vector3, volume_db: float = 0.0, max_distance: float = 30.0, pitch: float = 1.0) -> void:
 	var stream := _pick(bank)
 	if _silent:
 		return
 	var player := AudioStreamPlayer3D.new()
 	player.stream = stream
 	player.volume_db = volume_db
+	player.pitch_scale = pitch
 	player.bus = "SFX"
 	player.max_distance = max_distance
 	player.position = pos

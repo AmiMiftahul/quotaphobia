@@ -229,12 +229,16 @@ Lab the fewest. Sizes are in `SITE_INFO` in `scripts/rules.gd`.
 
 The ship is always safe. The first time you meet each one, the HUD explains it.
 
-**Deaths.** When a player or creature dies, the killing blow knocks the body flying, away from
-whatever struck it. It falls over in its death animation, bounces off walls, and lies where it
-lands until the ship leaves. Bigger hits throw further: a shovel knocks a Stalker about 4 m, a
-shotgun about 10 m. Creatures with no death animation (Mud Crawlers, Mimics) tumble and land
-squashed flat. The Gunner's corpse drops its shotgun as a real one you can take. Every machine
-gets the same push, so the whole crew sees the body land in about the same place. The code is `scripts/corpse.gd`.
+**Deaths.** When a player or creature dies, the killing blow sends the body flying, cartoon
+style, away from whatever struck it. It cartwheels head over heels with its arms and legs
+flailing, stretches out as it flies, bonks its head on the ceiling if it was hit hard enough,
+and squashes with a thud each time it bounces. When it lands it rights itself and flops over in
+its death animation, then lies there until the ship leaves. Bigger hits throw further: a shovel
+knocks a Stalker about 6 m, a shotgun about 9 m. Creatures with no death animation (Mud
+Crawlers, Mimics) tumble and land squashed flat. The Gunner's corpse drops its shotgun as a
+real one you can take. Every machine gets the same push and spin, so the whole crew sees the
+same flight and the body lands in the same place. The code is `scripts/corpse.gd`; the push,
+spin and bounce numbers are at the top of it.
 
 ## How the work flows
 
