@@ -80,7 +80,7 @@ func _host_tick(delta: float) -> void:
 	var toward := target.net_pos - position
 	toward.y = 0.0
 	if toward.length() < TOUCH_RANGE:
-		Session.damage_player(target.peer_id, scaled_damage(DAMAGE))
+		Session.damage_player(target.peer_id, scaled_damage(DAMAGE), position)
 		net_attacks += 1
 		_fade_away(target)
 		return

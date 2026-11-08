@@ -212,12 +212,12 @@ static func _swing(player: Player, item: Scrap) -> void:
 	var hunter := _hunter_in_front(player, SHOVEL_RANGE, SHOVEL_CONE, true)
 	if hunter != null:
 		Session.play_effect("bonk", hunter.position, hunter.position, 0)
-		hunter.hurt(SHOVEL_STUN)
+		hunter.hurt(SHOVEL_STUN, 1, player.net_pos)
 		return
 	var crewmate := _crewmate_in_front(player, SHOVEL_RANGE, SHOVEL_CONE)
 	if crewmate != null:
 		Session.play_effect("bonk", crewmate.net_pos, crewmate.net_pos, 0)
-		Session.damage_player(crewmate.peer_id, SHOVEL_CREW_DAMAGE)
+		Session.damage_player(crewmate.peer_id, SHOVEL_CREW_DAMAGE, player.net_pos)
 
 
 static func _zap(player: Player, item: Scrap) -> void:
@@ -246,7 +246,7 @@ static func _fire(player: Player, item: Scrap) -> void:
 	var hunter_distance := _flat_distance(player, hunter.position) if hunter != null else INF
 	if crewmate != null and _flat_distance(player, crewmate.net_pos) < hunter_distance:
 		Session.play_effect("shot", muzzle, crewmate.net_pos + Vector3(0, 1.2, 0), item.item_id)
-		Session.damage_player(crewmate.peer_id, SHOTGUN_CREW_DAMAGE)
+		Session.damage_player(crewmate.peer_id, SHOTGUN_CREW_DAMAGE, player.net_pos)
 		return
 	if hunter == null:
 		# Nothing in the way: the blast flies until it hits a wall.
@@ -258,7 +258,7 @@ static func _fire(player: Player, item: Scrap) -> void:
 	if hunter.max_hits() <= 0:
 		hunter.stun(SHOTGUN_STUN * 2.0) # Nothing hurts a Watcher, but a blast still rocks it.
 	else:
-		hunter.hurt(SHOTGUN_STUN, SHOTGUN_BLOWS)
+		hunter.hurt(SHOTGUN_STUN, SHOTGUN_BLOWS, player.net_pos)
 
 
 static func _throw(player: Player, item: Scrap) -> void:

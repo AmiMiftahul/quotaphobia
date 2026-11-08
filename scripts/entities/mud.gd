@@ -62,6 +62,12 @@ func _build(_data: Dictionary) -> void:
 		_puddles.append(puddle)
 
 
+func _not_in_corpse() -> Array:
+	var puddles: Array = []
+	puddles.append_array(_puddles) # The mud it left dries up when it dies.
+	return puddles
+
+
 func _extra_synced() -> Array[NodePath]:
 	return [^":net_trail"]
 

@@ -73,6 +73,7 @@ var _focus_gamble := false
 var _focus_gacha := false
 var _spectate_index := 0
 var _attack_show := 0.0
+var _corpse: Corpse
 
 
 func setup(peer: int, player_name: String, index: int, spawn_pos: Vector3, skin: String = "") -> void:
@@ -268,6 +269,21 @@ func _animate_and_step(delta: float) -> void:
 			Sfx.play_2d("step", -14.0)
 		else:
 			Sfx.play_3d("step", position, -8.0, 20.0)
+
+
+## On every machine, the moment this player dies: the body is knocked flying and
+## falls over, and stays where it lands. The player itself carries on as a spectator.
+func fall(push: Vector3) -> void:
+	if _corpse != null:
+		return
+	_body.visible = true # Your own body too, so you can see it from a crewmate's view.
+	current_animation = "die"
+	_corpse = Corpse.make(self, push, [_phone_model, _backpack_model])
+
+
+## The corpse this player left, if they're dead.
+func corpse() -> Corpse:
+	return _corpse
 
 
 ## Everyone else sees you swing when you use your gear.

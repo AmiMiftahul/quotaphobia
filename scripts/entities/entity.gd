@@ -91,15 +91,26 @@ func stun(seconds: float) -> void:
 
 
 ## Called on the host when a shovel or shotgun lands. Each blow stuns; the last one
-## finishes it. A shotgun blast counts as several blows at once.
-func hurt(stun_seconds: float, blows: int = 1) -> void:
+## finishes it. A shotgun blast counts as several blows at once, and knocks the body
+## further. `from` is where the blow came from.
+func hurt(stun_seconds: float, blows: int = 1, from: Vector3 = Vector3.INF) -> void:
 	if max_hits() <= 0:
 		return
 	_hits_taken += blows
 	if _hits_taken >= max_hits():
-		Session.kill_entity(self)
+		Session.kill_entity(self, from, 1.0 + blows * 0.5)
 	else:
 		stun(stun_seconds)
+
+
+## Called on every machine as it dies: its body flies off and stays where it lands.
+func leave_corpse(push: Vector3) -> void:
+	Corpse.make(self, push, _not_in_corpse(), position.y)
+
+
+## Parts that vanish with it rather than lying in the corpse.
+func _not_in_corpse() -> Array:
+	return []
 
 
 ## Shovel blows it takes on this level. A one-hit hunter stays one-hit.
@@ -296,6 +307,6 @@ func _try_attack(attack_range: float, damage: int) -> bool:
 		if offset.length() < attack_range:
 			_attack_timer = Rules.MONSTER_ATTACK_COOLDOWN
 			net_attacks += 1
-			Session.damage_player(player.peer_id, scaled_damage(damage))
+			Session.damage_player(player.peer_id, scaled_damage(damage), position)
 			return true
 	return false

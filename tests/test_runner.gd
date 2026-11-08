@@ -50,6 +50,7 @@ func _ready() -> void:
 		"tape": await _tape()
 		"kit": await _kit()
 		"beasts": await _beasts()
+		"corpses": await _corpses()
 		"tape_client": await _tape_client()
 		"late": await _late()
 		_: await _scenario()
@@ -1364,6 +1365,24 @@ func _ui_kit(main: Control) -> void:
 	check("a jackpot is announced on screen", main._phone_toast.visible and main._phone_toast.text.contains("JACKPOT"))
 	await _shot("gacha_jackpot")
 	Session.gacha_rig = -1
+	# A crewmate knocked flying, seen with real graphics.
+	Session.player_states[999] = {"hp": 100, "alive": true}
+	var victim: Player = Session._spawn_player({"peer": 999, "name": "Crewmate", "index": 1, "pos": Vector3(0, 0, -9.5)})
+	Session.players_root.add_child(victim)
+	me().rotation.y = 0.0
+	me().teleport(Vector3(0, 0.1, -5.6))
+	await wait(0.3)
+	Session.damage_player(999, Rules.PLAYER_MAX_HP, Vector3(0, 0, -8.5))
+	await wait(0.15)
+	await _shot("corpse_flying")
+	check("a body lands and lies still", await until(func() -> bool: return victim.corpse().resting, 5.0))
+	await wait(1.0)
+	await _shot("corpse_landed")
+	check("the landed body is on screen", me()._camera.is_position_in_frustum(victim.corpse().global_position + Vector3(0, 0.3, 0)))
+	Session.players_root.remove_child(victim)
+	victim.queue_free()
+	victim.corpse().queue_free()
+	Session.player_states.erase(999)
 	Session.credits = credits_before # Later checks count on the crew's real credits.
 
 
@@ -2413,6 +2432,11 @@ func _scenario() -> void:
 	check("everyone hears the monster start hunting", await until(func() -> bool: return Sfx.play_count.get("monster_growl", 0) >= 1, 3.0))
 	if idx != 2:
 		check("the dead player's body plays the death animation", await until(func() -> bool: return Session.player_node(bot2).current_animation == "die", 3.0))
+	var fallen := Session.player_node(bot2).corpse()
+	check("everyone sees the body knocked flying", fallen != null and fallen.get_parent() == Session.level)
+	check("everyone sees it land and lie still", await until(func() -> bool: return fallen.resting, 5.0) and is_equal_approx(fallen.position.y, 0.0))
+	check("the body lies inside the facility", Session.layout.has_cell(FacilityLayout.cell_at(fallen.position)) or Rules.in_ship(fallen.position))
+	print("CORPSE_SPOT %.2f %.2f" % [fallen.position.x, fallen.position.z])
 	if role == "host":
 		var monster := Session.entity_of_kind("stalker") as Monster
 		monster.enabled = false
@@ -3650,4 +3674,141 @@ func _beasts() -> void:
 	golden.free()
 	Session._scrap_spawner.spawn({"id": 9000, "kind": FacilityLayout.RARE_SCRAP, "value": 200, "weight": 0.08, "pos": room + Vector3(0, Scrap.FLOOR_HEIGHT, 0)})
 	check("a golden cog is worth a lot", item(9000) != null and item(9000).describe() == "Golden cog ($200)")
+	Net.leave()
+
+
+
+# --- Corpses: knocked flying, falling over, and staying put ------------------------
+
+## The corpse lying in the level whose name contains `part`, or null.
+func _corpse_of(part: String) -> Corpse:
+	if Session.level == null:
+		return null
+	for child in Session.level.get_children():
+		if child is Corpse and child.name.contains(part):
+			return child
+	return null
+
+
+func _corpses() -> void:
+	check("host opens", Net.host("Host", port) == OK)
+	Session.entities_enabled = false
+	Session.forced_maps = ["foundry"]
+	Session.goal_override = 5000
+	Session.results_seconds = 0.7
+	Session.start_run()
+	await until(func() -> bool: return me() != null, 3.0)
+	var room := FacilityLayout.cell_center(FacilityLayout.ENTRY_CELL)
+
+	# A Stalker finished off with a shovel flies away from the swing and falls over.
+	await _fresh_round("foundry")
+	var stalker := Session.entity_of_kind("stalker")
+	var start := room + Vector3(0, 0, -1.0)
+	me().rotation.y = 0.0
+	me().teleport(room + Vector3(0, 0.1, 1.0))
+	_wake(stalker, start)
+	stalker.enabled = false
+	stalker._hits_taken = stalker.max_hits() - 1
+	_give(Tools.SHOVEL)
+	await _use_gear()
+	check("the Stalker is gone from the hunt", Session.entity_of_kind("stalker") == null)
+	var body := _corpse_of("Stalker")
+	check("it leaves a corpse", body != null and body.get_child_count() > 0)
+	var animator := Assets.find_animation_player(body)
+	check("the corpse plays the death animation", animator != null and animator.current_animation == "die")
+	await wait(0.2)
+	check("the blow knocks it up and away from you", body.position.y > 0.2 and body.position.z < start.z)
+	check("it lands and lies still", await until(func() -> bool: return body.resting, 5.0) and is_equal_approx(body.position.y, 0.0))
+	var landed := body.position
+	var shovel_throw := Vector2(landed.x - start.x, landed.z - start.z).length()
+	check("it lands further from you than it stood (%.1f m)" % shovel_throw, landed.z < start.z and shovel_throw > 0.5)
+	await wait(1.0)
+	check("a corpse stays where it lands", body.position == landed and body.get_parent() == Session.level)
+
+	# A shotgun throws a body much further than a shovel does.
+	await _fresh_round("foundry")
+	stalker = Session.entity_of_kind("stalker")
+	me().rotation.y = 0.0
+	me().teleport(room + Vector3(0, 0.1, 4.0))
+	_wake(stalker, room + Vector3(0, 0, 2.0))
+	stalker.enabled = false
+	stalker._hits_taken = stalker.max_hits() - 1
+	var shotgun_start := stalker.position
+	_give(Tools.SHOTGUN)
+	await _use_gear()
+	body = _corpse_of("Stalker")
+	check("a shotgun kill leaves a corpse too", body != null)
+	await until(func() -> bool: return body.resting, 5.0)
+	var shotgun_throw := Vector2(body.position.x - shotgun_start.x, body.position.z - shotgun_start.z).length()
+	check("a shotgun throws a body further than a shovel (%.1f m vs %.1f m)" % [shotgun_throw, shovel_throw], shotgun_throw > shovel_throw + 1.0)
+	check("a flying body never goes through a wall", Session.layout.has_cell(FacilityLayout.cell_at(body.position)) and FacilityLayout.cell_at(body.position) == FacilityLayout.cell_at(shotgun_start) or Rules.in_ship(body.position))
+
+	# The Gunner's corpse doesn't keep its gun: that's dropped for the crew. A Mud
+	# Crawler, with nothing to fall over with, tumbles and lands squashed flat.
+	await _fresh_round("foundry")
+	var gunner := Session.entity_of_kind("gunner")
+	_wake(gunner, room + Vector3(0, 0, -2.0))
+	gunner.enabled = false
+	for hit in gunner.max_hits():
+		gunner.hurt(0.1, 1, room + Vector3(0, 0, 2.0))
+	body = _corpse_of("Gunner")
+	check("a Gunner leaves a corpse without its gun", body != null and gear(Tools.SHOTGUN) != null and body.find_children("Barrel*", "", true, false).is_empty() and not body.find_children("*", "MeshInstance3D", true, false).any(func(mesh: MeshInstance3D) -> bool: return mesh.mesh is CylinderMesh and mesh.mesh.height > 10.0))
+	await _fresh_round("biolab")
+	var mud := Session.entity_of_kind("mud") as MudCrawler
+	_wake(mud, room + Vector3(0, 0, -2.0))
+	mud.net_trail = PackedVector3Array([room + Vector3(1, 0, -3)])
+	mud.enabled = false
+	for hit in mud.max_hits():
+		mud.hurt(0.1, 1, room + Vector3(0, 0, 2.0))
+	body = _corpse_of("Mud")
+	check("a Mud Crawler leaves a corpse, and its mud dries up", body != null and not body.find_children("*", "MeshInstance3D", true, false).any(func(mesh: MeshInstance3D) -> bool: return mesh.top_level))
+	check("with no death animation it tumbles, then lands squashed flat", body._shapeless and await until(func() -> bool: return body.resting, 5.0) and body.scale.y < 0.5 and body.rotation.x == 0.0)
+	check("no mud slows anyone once it's dead", is_equal_approx(Session.mud_factor(room + Vector3(1, 0, -3)), 1.0))
+
+	# Players: a killing blow knocks the body away from whatever struck it.
+	await _fresh_round("foundry")
+	Session.player_states[999] = {"hp": 100, "alive": true}
+	var crewmate: Player = Session._spawn_player({"peer": 999, "name": "Crewmate", "index": 1, "pos": room + Vector3(0, 0, -1.0)})
+	Session.players_root.add_child(crewmate)
+	await get_tree().physics_frame
+	var stood := crewmate.position
+	Session.damage_player(999, 30, room + Vector3(0, 0, 3.0))
+	check("a hit that doesn't kill leaves no corpse", crewmate.corpse() == null and crewmate._body.get_parent() == crewmate)
+	Session.damage_player(999, 80, room + Vector3(0, 0, 3.0))
+	body = crewmate.corpse()
+	check("a killed crewmate's body becomes a corpse", body != null and crewmate._body.get_parent() == body)
+	check("the body plays the death animation", crewmate._animator.current_animation == "die")
+	await until(func() -> bool: return body.resting, 5.0)
+	check("it's knocked away from the blow", body.position.z < stood.z - 0.5)
+	var kept_at := body.position
+	crewmate.position = room + Vector3(3, 0, 3)
+	await wait(0.3)
+	check("the body stays put when the player's spectating somewhere else", body.position == kept_at)
+	# A body that slams into something drops near it, rather than flying back.
+	var thrown: Player = Session._spawn_player({"peer": 998, "name": "Thrown", "index": 2, "pos": Vector3(0, 0, -11.0)})
+	Session.player_states[998] = {"hp": 100, "alive": true}
+	Session.players_root.add_child(thrown)
+	await get_tree().physics_frame
+	Session.damage_player(998, Rules.PLAYER_MAX_HP, Vector3(0, 0, -6.5))
+	await until(func() -> bool: return thrown.corpse().resting, 5.0)
+	check("a body thrown into the console drops beside it (%.1f)" % thrown.corpse().position.z, thrown.corpse().position.z < -10.0 and thrown.corpse().position.z > Rules.CONSOLE_POS.z)
+	Session.players_root.remove_child(thrown)
+	thrown.queue_free()
+	Session.player_states.erase(998)
+
+	# Your own death: you see your body from a crewmate's view. (Someone else is still
+	# alive, so the day doesn't end the moment you fall.)
+	Session.player_states[999] = {"hp": 100, "alive": true}
+	me().teleport(room + Vector3(0, 0.1, 2.0))
+	await get_tree().physics_frame
+	Session.damage_player(1, Rules.PLAYER_MAX_HP, room + Vector3(0, 0, 4.0))
+	check("your own body becomes a visible corpse", me().corpse() != null and me()._body.visible)
+	check("the body lands and stays", await until(func() -> bool: return me().corpse().resting, 5.0))
+	Session.players_root.remove_child(crewmate)
+	crewmate.queue_free()
+	Session.player_states.erase(999)
+
+	# Corpses are cleared away with the facility when the ship leaves.
+	Session._end_round()
+	check("corpses go with the facility", await until(func() -> bool: return Session.phase == Session.Phase.ORBIT, 5.0) and _corpse_of("") == null)
 	Net.leave()

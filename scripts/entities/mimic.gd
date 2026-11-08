@@ -42,5 +42,5 @@ func _host_tick(delta: float) -> void:
 		if offset.length() < BITE_RANGE:
 			net_state = REVEALED
 			_vanish_timer = VANISH_SECONDS
-			Session.damage_player(player.peer_id, scaled_damage(DAMAGE))
+			Session.damage_player(player.peer_id, scaled_damage(DAMAGE), position)
 			return

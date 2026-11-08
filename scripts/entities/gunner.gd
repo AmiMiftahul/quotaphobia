@@ -19,6 +19,7 @@ var _aim_left := 0.0
 var _reload_left := 0.0
 var _target: Player
 var _laser: MeshInstance3D
+var _gun: Node3D
 
 
 func _build(_data: Dictionary) -> void:
@@ -27,10 +28,10 @@ func _build(_data: Dictionary) -> void:
 	_step_distance = 3.0
 	_add_character_body("character-male-b", 2.9, Color(0.22, 0.27, 0.16))
 	_add_eyes(Color(1.0, 0.25, 0.1), 1.95, 0.1, 0.32, 0.05)
-	var gun := Tools.build_model(Tools.SHOTGUN)
-	gun.scale = Vector3.ONE * 1.4
-	gun.position = Vector3(0.28, GUN_HEIGHT - 0.2, -0.35)
-	add_child(gun)
+	_gun = Tools.build_model(Tools.SHOTGUN)
+	_gun.scale = Vector3.ONE * 1.4
+	_gun.position = Vector3(0.28, GUN_HEIGHT - 0.2, -0.35)
+	add_child(_gun)
 	var beam := CylinderMesh.new()
 	beam.top_radius = 0.012
 	beam.bottom_radius = 0.012
@@ -53,6 +54,11 @@ func _on_state_changed(_old_state: int) -> void:
 	_laser.visible = net_state == AIMING
 	if net_state == AIMING:
 		Sfx.play_3d("switch", position, 2.0, 25.0) # The shotgun being racked.
+
+
+## Its shotgun drops as a real one the crew can pick up, so the corpse doesn't keep it.
+func _not_in_corpse() -> Array:
+	return [_laser, _gun]
 
 
 func stun(seconds: float) -> void:
@@ -96,7 +102,7 @@ func _keep_aiming(delta: float) -> void:
 	var muzzle := position + Vector3(0, GUN_HEIGHT, 0)
 	if can_see(_target, false):
 		Session.play_effect("shot", muzzle, _target.net_pos + Vector3(0, 1.2, 0), 0)
-		Session.damage_player(_target.peer_id, scaled_damage(DAMAGE))
+		Session.damage_player(_target.peer_id, scaled_damage(DAMAGE), position)
 	else:
 		Session.play_effect("shot", muzzle, muzzle + Vector3.FORWARD.rotated(Vector3.UP, rotation.y) * SIGHT_RANGE * 0.5, 0)
 

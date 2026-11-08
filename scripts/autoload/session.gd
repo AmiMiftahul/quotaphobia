@@ -521,12 +521,18 @@ func _clear_entities() -> void:
 			child.queue_free()
 
 
-func damage_player(peer: int, amount: int) -> void:
+## `from` is where the hit came from. A killing blow knocks the body away from it,
+## harder the bigger the hit.
+func damage_player(peer: int, amount: int, from: Vector3 = Vector3.INF) -> void:
 	if not multiplayer.is_server() or not is_player_alive(peer):
 		return
 	var hp: int = player_states[peer].hp - amount
 	var alive := hp > 0
-	_rpc_player_state.rpc(peer, maxi(hp, 0), alive)
+	var push := Vector3.ZERO
+	var node := player_node(peer)
+	if not alive and node != null:
+		push = Corpse.push_from(node.net_pos, from, clampf(amount / 25.0, 1.0, 4.0))
+	_rpc_player_state.rpc(peer, maxi(hp, 0), alive, push)
 	if not alive:
 		_release_all_items(peer)
 		_end_round_if_wiped()
@@ -535,7 +541,7 @@ func damage_player(peer: int, amount: int) -> void:
 func heal_player(peer: int, amount: int) -> void:
 	if not multiplayer.is_server() or not is_player_alive(peer):
 		return
-	_rpc_player_state.rpc(peer, mini(player_states[peer].hp + amount, Rules.PLAYER_MAX_HP), true)
+	_rpc_player_state.rpc(peer, mini(player_states[peer].hp + amount, Rules.PLAYER_MAX_HP), true, Vector3.ZERO)
 
 
 ## How much of your speed you keep here: less in a Mud Crawler's mud.
@@ -546,11 +552,14 @@ func mud_factor(pos: Vector3) -> float:
 	return 1.0
 
 
-## Called on the host when the crew's gear finishes something off.
-func kill_entity(entity: Entity) -> void:
+## Called on the host when the crew's gear finishes something off. Its body is
+## knocked away from `from`; a shotgun throws it further than a shovel.
+func kill_entity(entity: Entity, from: Vector3 = Vector3.INF, strength: float = 1.5) -> void:
 	if not multiplayer.is_server() or entity.get_parent() != entity_root:
 		return
 	play_effect("kill", entity.position, entity.position, 0)
+	# Sent before the creature is removed, so every machine still has it to turn into a corpse.
+	_rpc_entity_corpse.rpc(entity.name, Corpse.push_from(entity.position, from, strength))
 	if entity.kind == "gunner":
 		# The Gunner's shotgun is left behind, with what shells it had.
 		_spawn_gear(Tools.SHOTGUN, [], Vector3(entity.position.x, Scrap.FLOOR_HEIGHT, entity.position.z), Gunner.SHELLS)
@@ -1079,13 +1088,23 @@ func _rpc_tick(new_time_left: float, value: int) -> void:
 
 
 @rpc("authority", "call_local", "reliable")
-func _rpc_player_state(peer: int, hp: int, alive: bool) -> void:
+func _rpc_player_state(peer: int, hp: int, alive: bool, push: Vector3) -> void:
 	var old_hp: int = player_states[peer].hp if player_states.has(peer) else hp
+	var was_alive: bool = player_states[peer].alive if player_states.has(peer) else true
 	player_states[peer] = {"hp": hp, "alive": alive}
+	if was_alive and not alive and player_node(peer) != null:
+		player_node(peer).fall(push)
 	if peer == Net.my_id() and hp < old_hp:
 		Sfx.play_2d("hit", -4.0)
 		Settings.rumble(0.4, 0.8, 0.3)
 	stats_changed.emit()
+
+
+@rpc("authority", "call_local", "reliable")
+func _rpc_entity_corpse(entity_name: String, push: Vector3) -> void:
+	var entity := entity_root.get_node_or_null(entity_name) as Entity
+	if entity != null:
+		entity.leave_corpse(push)
 
 
 @rpc("authority", "reliable")

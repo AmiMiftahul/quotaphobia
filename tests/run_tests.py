@@ -63,7 +63,7 @@ def main():
             common = [f"port={GAME_PORT}", *cloud]
             # Each test player gets a throwaway login file, so tests start signed out.
             login = lambda name: f"cloud_session={Path(logs) / (name + '.cfg')}"
-            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("slots", [f"port={GAME_PORT - 5}"]), ("kit", [f"port={GAME_PORT - 7}"]), ("beasts", [f"port={GAME_PORT - 8}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
+            for role, extra in (("store", []), ("store_steam", ["fake_steam"]), ("entities", [f"port={GAME_PORT - 1}"]), ("settings", []), ("carry", [f"port={GAME_PORT - 2}"]), ("days", [f"port={GAME_PORT - 3}"]), ("gear", [f"port={GAME_PORT - 4}"]), ("slots", [f"port={GAME_PORT - 5}"]), ("kit", [f"port={GAME_PORT - 7}"]), ("beasts", [f"port={GAME_PORT - 8}"]), ("corpses", [f"port={GAME_PORT - 9}"]), ("video", [f"video={Path(logs) / 'test_clip.mov'}"])):
                 procs[f"{role}0"] = launch(logs, f"{role}0", f"role={role}", login(role), *cloud, *extra)
                 try:
                     procs[f"{role}0"].wait(timeout=150)
@@ -139,6 +139,18 @@ def main():
             else:
                 passed += 1
                 print(f"PASS all machines built the same facility ({tag})")
+
+        # A dead player's body is pushed the same way on every machine, so it lands in
+        # about the same place for everyone.
+        spots = []
+        for name in procs:
+            spots += [(float(x), float(z)) for x, z in re.findall(r"^CORPSE_SPOT (-?[\d.]+) (-?[\d.]+)", read(logs, name), re.M)]
+        spread = max((abs(a[0] - b[0]) ** 2 + abs(a[1] - b[1]) ** 2) ** 0.5 for a in spots for b in spots) if spots else 99.0
+        if len(spots) >= 4 and spread < 1.0:
+            passed += 1
+            print(f"PASS a body lands in the same place on every machine ({spread:.2f} m apart at most)")
+        else:
+            failures.append(f"bodies landed in different places: {spots}")
 
         inserts = (Path(logs) / "mock.log").read_text().count("MOCK_INSERT")
         # One from each of the 3 players left in the session, and one each from the days and gear tests' finished runs.

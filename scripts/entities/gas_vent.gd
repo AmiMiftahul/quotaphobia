@@ -88,4 +88,4 @@ func _host_tick(delta: float) -> void:
 		var offset := player.net_pos - position
 		offset.y = 0.0
 		if offset.length() < RADIUS:
-			Session.damage_player(player.peer_id, scaled_damage(DAMAGE_PER_TICK))
+			Session.damage_player(player.peer_id, scaled_damage(DAMAGE_PER_TICK), position)
